@@ -30,7 +30,9 @@ def master_uuid(info: BluetoothServiceInfoBleak) -> str | None:
 
 def _is_unit(info: BluetoothServiceInfoBleak) -> bool:
     return info.connectable and (
-        master_uuid(info) is not None or FEF8_UUID in [u.lower() for u in info.service_uuids]
+        master_uuid(info) is not None
+        or FEF8_UUID in [u.lower() for u in info.service_uuids]
+        or info.address.upper().startswith("00:1C:4D:")  # Aplix OUI
     )
 
 

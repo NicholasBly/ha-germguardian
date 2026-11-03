@@ -188,8 +188,9 @@ async def open_session(ble_device: Any, key: bytes, protocol_number: int, name: 
         raise CommError(f"cannot connect: {err}") from err
     sess = Session(client, key, protocol_number)
     try:
-        await sess.start()
+        # Log in FIRST: the unit refuses notification setup until authenticated.
         await sess.authenticate()
+        await sess.start()
     except Exception:
         await client.disconnect()
         raise

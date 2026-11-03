@@ -32,7 +32,7 @@ On any computer with Bluetooth, Python 3.11+:
 pip install bleak bleak-retry-connector cryptography
 git clone https://github.com/NicholasBly/ha-germguardian
 cd ha-germguardian
-python tools/gg_probe.py --pair                  # hold LINK; prints your key
+python tools/gg_probe.py --pair                  # then hold LINK; prints your key
 python tools/gg_probe.py --key YOUR_KEY          # control test
 python tools/gg_probe.py --key YOUR_KEY --on     # also turns it on
 ```
