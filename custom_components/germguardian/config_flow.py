@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from . import protocol as P
 from .client import AuthError, GuardianError, open_session
+from .pairing import pair_over_ble
 from .const import (
     CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, DEFAULT_PROTOCOL,
     DOMAIN, FEF8_UUID, MASTER_PREFIX, MODELS,
@@ -73,12 +74,16 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                key = P.parse_key(user_input[CONF_KEY])
+                text = user_input.get(CONF_KEY, "").strip()
+                key = P.parse_key(text) if text else None
                 proto = int(user_input[CONF_PROTOCOL].replace("0x", ""), 16)
             except ValueError:
                 errors["base"] = "bad_key"
             else:
-                err = await self._try(key, proto)
+                err = None
+                if key is None:
+                    key, err = await self._pair(proto)
+                err = err or await self._try(key, proto)
                 if err:
                     errors["base"] = err
                 else:
@@ -94,12 +99,15 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
                     )
         schema = vol.Schema({
             vol.Required(CONF_MODEL, default="CDAP4500BCA"): vol.In(list(MODELS)),
-            vol.Required(CONF_KEY): str,
+            vol.Optional(CONF_KEY, default=""): str,
             vol.Required(CONF_PROTOCOL, default=f"{DEFAULT_PROTOCOL:08X}"): str,
         })
         return self.async_show_form(
             step_id="setup", data_schema=schema, errors=errors,
-            description_placeholders={"address": self._info.address},
+            description_placeholders={
+                "address": self._info.address,
+                "detail": getattr(self, "_pair_error", ""),
+            },
         )
 
     async def _try(self, key: bytes, proto: int) -> str | None:
@@ -121,3 +129,17 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
                 except Exception:  # noqa: BLE001
                     pass
         return None
+
+    async def _pair(self, proto: int) -> tuple[bytes | None, str | None]:
+        mu = self.unique_id if (self.unique_id or "").startswith(MASTER_PREFIX) else None
+        if mu is None:
+            return None, "no_master_uuid"
+        dev = bluetooth.async_ble_device_from_address(self.hass, self._info.address, connectable=True)
+        if dev is None:
+            return None, "not_in_range"
+        try:
+            return await pair_over_ble(dev, mu, proto), None
+        except GuardianError as err:
+            _LOGGER.warning("pairing failed: %s", err)
+            self._pair_error = str(err)
+            return None, "pair_failed"

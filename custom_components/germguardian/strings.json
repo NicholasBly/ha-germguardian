@@ -5,14 +5,16 @@
       "user": {
         "title": "Choose your purifier",
         "description": "Pick the unit to add. It must be powered on and in Bluetooth range.",
-        "data": {"unit": "Purifier"}
+        "data": {
+          "unit": "Purifier"
+        }
       },
       "setup": {
         "title": "Model and key",
-        "description": "Unit at {address}. The vendor's servers are gone, so this integration cannot pair a unit by itself. Paste the 16-byte local key from a phone that was already paired to this purifier (base64 like `AbC...==`, or 32 hex characters).",
+        "description": "Unit at {address}.\n\n**To pair a unit:** leave the key empty, press and HOLD the purifier's LINK button, and keep holding it while you press Submit (takes up to ~30 s; needs internet to reach Aplix's server a.iots.net). **To use a key you already have:** paste it (base64 or 32 hex characters).\n\n{detail}",
         "data": {
           "model": "Model",
-          "local_key": "Local key",
+          "local_key": "Local key (leave empty to pair)",
           "protocol_number": "Protocol number (hex) - leave the default unless told otherwise"
         }
       }
@@ -21,7 +23,9 @@
       "bad_key": "That is not a valid 16-byte key (base64 or 32 hex characters), or the protocol number is not hex.",
       "not_in_range": "Home Assistant cannot see this purifier right now. Move a Bluetooth adapter or proxy closer.",
       "cannot_connect": "Connected, but the purifier did not answer. Try again.",
-      "invalid_auth": "The purifier rejected this key. It belongs to a different unit or slot."
+      "invalid_auth": "The purifier rejected this key. It belongs to a different unit or slot.",
+      "pair_failed": "Pairing failed - see the Home Assistant log (\"pairing failed\"). Keep LINK held, stay close to the unit, and check internet access.",
+      "no_master_uuid": "This unit's Bluetooth ID could not be read, so it cannot be paired from here. Paste a key instead, or use tools/gg_probe.py --pair."
     },
     "abort": {
       "no_devices_found": "No purifiers found. Make sure it is powered on and in range.",
@@ -29,14 +33,32 @@
     }
   },
   "entity": {
-    "switch": {"uv": {"name": "UV light"}},
-    "select": {"timer": {"name": "Timer"}},
+    "switch": {
+      "uv": {
+        "name": "UV light"
+      }
+    },
+    "select": {
+      "timer": {
+        "name": "Timer"
+      }
+    },
     "sensor": {
-      "air_quality": {"name": "Air quality"},
-      "filter_hours": {"name": "Filter hours used"},
-      "filter_life": {"name": "Filter life remaining"},
-      "bulb_hours": {"name": "UV bulb hours used"},
-      "bulb_life": {"name": "UV bulb life remaining"}
+      "air_quality": {
+        "name": "Air quality"
+      },
+      "filter_hours": {
+        "name": "Filter hours used"
+      },
+      "filter_life": {
+        "name": "Filter life remaining"
+      },
+      "bulb_hours": {
+        "name": "UV bulb hours used"
+      },
+      "bulb_life": {
+        "name": "UV bulb life remaining"
+      }
     }
   }
 }
