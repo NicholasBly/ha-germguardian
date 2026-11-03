@@ -37,11 +37,20 @@ async def main():
         if m and (not a.address or d.address.lower() == a.address.lower()):
             cands.append((d, m))
             print("  ", d.address, adv.rssi, m)
-    dev, master = cands[0] if cands else (None, None)
+    dev, master = (None, None)
+    if len(cands) == 1:
+        dev, master = cands[0]
+    elif cands:
+        print("\nMore than one Aplix unit is in range (one may be a gateway, not a purifier).")
+        for i, (d, m) in enumerate(cands):
+            print(f"  [{i}] {d.address}")
+        pick = input("Which one is your PURIFIER? number: ").strip()
+        dev, master = cands[int(pick)]
     if not dev:
         sys.exit("no purifier found - is it powered and in range?")
     if a.pair:
-        print("HOLD the LINK button now, then wait...")
+        print("\nPress and HOLD the purifier's LINK button until it beeps/flashes,")
+        input("keep holding it, then press Enter here... ")
         try:
             key = await PR.pair_over_ble(dev, master, int(a.protocol, 16), progress=lambda m: print("  *", m))
         except Exception as e:
