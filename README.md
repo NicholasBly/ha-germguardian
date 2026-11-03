@@ -76,6 +76,27 @@ The message now says why:
   hears, open Settings -> Devices & services -> Bluetooth -> Configure -> advertisement
   monitor and look for an address starting `00:1C:4D:`.
 
+### Home Assistant in Docker (for example on a Raspberry Pi)
+
+If Settings -> Devices & services -> Bluetooth shows your adapter as *Failed setup ...
+DBus service not found; docker config may be missing `-v /run/dbus:/run/dbus:ro`*, the
+container cannot reach the host's Bluetooth, so nothing (this integration included) can
+find a device. Per [Home Assistant's Bluetooth docs](https://www.home-assistant.io/integrations/bluetooth/),
+the container needs the host's D-Bus socket and two capabilities. In `docker-compose.yml`:
+
+```yaml
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - /run/dbus:/run/dbus:ro
+```
+
+(or `--cap-add=NET_ADMIN --cap-add=NET_RAW -v /run/dbus:/run/dbus:ro` with `docker run`).
+Apply it by **recreating** the container (`docker compose up -d`); a restart is not enough.
+The host also needs BlueZ (5.43 or newer, 5.63+ recommended): `sudo apt-get install bluez`.
+Home Assistant OS and Supervised installs set this up automatically.
+
 ## Capturing the official app (for developers)
 
 `tools/capture_app.py` runs mitmproxy and logs the app's traffic to `a_iots_capture.txt`
