@@ -95,10 +95,12 @@ async def main():
         _, dev, master = tries[0]
         print("LINK detected on %s - keep holding!" % dev.address)
         try:
-            key = await PR.pair_over_ble(dev, master, proto, progress=lambda m: print("  *", m))
+            res = await PR.pair_over_ble(dev, master, proto, progress=lambda m: print("  *", m))
         except Exception as e:
             sys.exit(f"PAIRING FAILED: {e}")
+        key, proto = res.key, res.protocol      # the server's protocol number wins
         print("\nDONE - you can let go of LINK.")
+        print("protocol number: %08X" % proto)
         print("KEY (save this!):", base64.b64encode(key).decode(), "  hex:", key.hex())
         await asyncio.sleep(3)
         tries = [tries[0]]

@@ -28,7 +28,8 @@
       "no_master_uuid": "This unit's Bluetooth ID could not be read, so it cannot be paired from here. Paste a key instead, or use tools/gg_probe.py --pair."
     },
     "abort": {
-      "no_devices_found": "No purifiers found. Make sure it is powered on and in range.",
+      "no_scanner": "Home Assistant has no Bluetooth adapter or Bluetooth proxy that can connect to devices, so it cannot find the purifier. Check Settings > Devices & services > Bluetooth, add an adapter or an ESPHome Bluetooth proxy, then try again.",
+      "no_devices_found": "Home Assistant's Bluetooth can see {seen} devices, but none of them is a purifier. Make sure the purifier is plugged in and on, close the Guardian app on your phone (a connected phone can hide the purifier), and put the Bluetooth adapter or proxy within about 10 feet (3 m) of the purifier. Then try again.",
       "already_configured": "This purifier is already set up."
     }
   },

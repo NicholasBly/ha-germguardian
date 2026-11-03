@@ -18,6 +18,18 @@ class FakeServer:
 
     def post_json(self, path, o):
         self.calls.append((path, o["request"]))
+        assert o["clientInformation"] == PR.CLIENT_INFO     # every real request carries it
+        if o["request"] == "validateDevices":
+            assert path == "/setup"
+            res = []
+            for d in o["devices"]:
+                known = d["masterUUID"] == MASTER.replace("-", "")
+                res.append({
+                    "masterUUID": d["masterUUID"], "result": "OK" if known else "NotAuthenticated",
+                    "types": ["93240"] if known else [], "functionNumber": 65551 if known else None,
+                    "protocolNumber": PROTO if known else None, "deviceName": " ",
+                })
+            return 200, json.dumps({"results": res}).encode()
         if path == "/imper" and o["request"] == "getChallenge":
             assert o["masterUUID"] == MASTER.replace("-", "")
             self.schal = os.urandom(16)
@@ -96,3 +108,68 @@ def test_carousel_roundtrip_header_bits():
     asyncio.run(PR.carousel_write(u, PR.U_F011, bytes(range(40))))
     assert u.slot == bytes(range(40))     # 3 blocks, last one short
     assert u.writes.count(PR.U_F011) == 3
+
+
+# ---- wire format, checked against a capture of the real app (bodies and Content-Length) ----
+CAPTURED_GET_CHALLENGE = (
+    b'{"deviceChallenge":"00112233445566778899aabbccddeeff",'
+    b'"masterUUID":"0000000024f64000a0000fedf19130a2",'
+    b'"clientInformation":{"model":"i:iPhone18,1","osVersion":"27.2","sdkVersion":"i:1.6.4."},'
+    b'"request":"getChallenge","version":"20141224"}'
+)
+CAPTURED_VERIFY = (
+    b'{"clientInformation":{"model":"i:iPhone18,1","osVersion":"27.2","sdkVersion":"i:1.6.4."},'
+    b'"masterUUID":"0000000024f64000a0000fedf19130a2",'
+    b'"deviceResponse":"0f0e0d0c0b0a09080706050403020100",'
+    b'"serverChallenge":"101112131415161718191a1b1c1d1e1f",'
+    b'"request":"verifyResponse","version":"20141224"}'
+)
+CAPTURED_VALIDATE = (
+    b'{"validateOption":{"types":["93240","82567"]},'
+    b'"clientInformation":{"model":"i:iPhone18,1","osVersion":"27.2","sdkVersion":"i:1.6.4."},'
+    b'"devices":[{"masterUUID":"0000000024f64000a0000fedf19130a2"}],'
+    b'"central":"i:iPhone18,1","request":"validateDevices","version":"20150818"}'
+)
+
+
+def test_wire_format_matches_real_app():
+    enc = PR.Http.encode
+    got = enc(PR.body_get_challenge(MASTER, bytes.fromhex("00112233445566778899aabbccddeeff")))
+    assert got == CAPTURED_GET_CHALLENGE and len(got) == 236      # Content-Length in the capture
+    got = enc(PR.body_verify(MASTER, bytes.fromhex("101112131415161718191a1b1c1d1e1f"),
+                             bytes.fromhex("0f0e0d0c0b0a09080706050403020100")))
+    assert got == CAPTURED_VERIFY and len(got) == 290
+    got = enc(PR.body_validate(MASTER))
+    assert got == CAPTURED_VALIDATE and len(got) == 270
+
+
+def test_headers_identify_this_client():
+    h = PR.Http.headers()
+    assert h["User-Agent"].startswith("ha-germguardian")
+    assert h["Content-Type"] == "application/json" and h["Accept"] == "*/*"
+    assert "oem4guardiantech" not in str(h)          # we do not pose as the vendor's app
+
+
+def test_validate_returns_the_servers_protocol_number():
+    info = asyncio.run(PR.validate(FakeServer(), MASTER))
+    assert info.protocol == PROTO and info.types == ["93240"]
+
+
+def test_validate_rejects_unknown_unit():
+    with pytest.raises(PR.PairError, match="does not recognise"):
+        asyncio.run(PR.validate(FakeServer(), "00000000-24f6-4000-a000-000000000001"))
+
+
+class Forbidden:
+    last_headers = {"Server": "awselb/2.0", "Content-Type": "text/html", "Set-Cookie": "secret"}
+
+    def post_json(self, path, o):
+        return 403, b"<html><body><h1>403 Forbidden</h1></body></html>"
+
+
+def test_403_error_is_readable_and_names_the_front_server():
+    with pytest.raises(PR.PairError) as e:
+        asyncio.run(PR.validate(Forbidden(), MASTER))
+    msg = str(e.value)
+    assert "403" in msg and "awselb" in msg and "403 Forbidden" in msg
+    assert "<html>" not in msg and "secret" not in msg

@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from . import protocol as P
 from .client import AuthError, GuardianError, open_session
-from .pairing import pair_over_ble
+from .pairing import PairResult, pair_over_ble
 from .const import (
     CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, DEFAULT_PROTOCOL,
     DOMAIN, FEF8_UUID, MASTER_PREFIX, MODELS,
@@ -59,13 +59,24 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(self._uid(self._info))
             self._abort_if_unique_id_configured()
             return await self.async_step_setup()
-        self._found = {
-            self._uid(i): i
-            for i in bluetooth.async_discovered_service_info(self.hass, connectable=True)
-            if _is_unit(i) and self._uid(i) not in self._async_current_ids()
-        }
+        infos = list(bluetooth.async_discovered_service_info(self.hass, connectable=True))
+        units = [i for i in infos if _is_unit(i)]
+        configured = self._async_current_ids()
+        self._found = {self._uid(i): i for i in units if self._uid(i) not in configured}
         if not self._found:
-            return self.async_abort(reason="no_devices_found")
+            if units:
+                return self.async_abort(reason="already_configured")
+            # Say WHY nothing was found: no adapter/proxy at all, or it just can't hear the unit.
+            scanners = bluetooth.async_scanner_count(self.hass, connectable=True)
+            _LOGGER.warning(
+                "No GermGuardian purifier found: %d connectable Bluetooth scanner(s), %d devices seen",
+                scanners, len(infos),
+            )
+            if scanners == 0:
+                return self.async_abort(reason="no_scanner")
+            return self.async_abort(
+                reason="no_devices_found", description_placeholders={"seen": str(len(infos))}
+            )
         opts = {k: f"{v.address} ({v.rssi} dBm)" for k, v in self._found.items()}
         return self.async_show_form(
             step_id="user", data_schema=vol.Schema({vol.Required("unit"): vol.In(opts)})
@@ -84,7 +95,9 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
             else:
                 err = None
                 if key is None:
-                    key, err = await self._pair(proto)
+                    paired, err = await self._pair(proto)
+                    if paired is not None:
+                        key, proto = paired.key, paired.protocol   # server's number wins
                 err = err or await self._try(key, proto)
                 if err:
                     errors["base"] = err
@@ -132,7 +145,7 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
                     pass
         return None
 
-    async def _pair(self, proto: int) -> tuple[bytes | None, str | None]:
+    async def _pair(self, proto: int) -> tuple[PairResult | None, str | None]:
         mu = self.unique_id if (self.unique_id or "").startswith(MASTER_PREFIX) else None
         if mu is None:
             return None, "no_master_uuid"

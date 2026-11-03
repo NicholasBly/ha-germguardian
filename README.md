@@ -4,16 +4,24 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: first test version (0.1.0).** The protocol layer is verified against captures
-from real hardware and a simulated purifier, but the Home Assistant glue has not yet been
-run on a live Home Assistant. Expect to report bugs.
+**Status: test version (0.1.1).**
+- **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
+  with `tools/gg_probe.py`).
+- **Pairing through Aplix's server: not working yet.** The first attempts were refused with
+  HTTP 403; the requests now match a capture of the official app (see below), but this
+  has not been confirmed on a real unit.
+- **Home Assistant glue: not yet confirmed on a live Home Assistant.** Expect to report bugs.
+
+If you already have a key, you do not need pairing at all: paste it in the setup form.
 
 ## Pairing (needs internet once)
 
 Each purifier is controlled with a 16-byte *local key*. The official app obtains it from
 Aplix's server **`a.iots.net`** while you hold the LINK button; that server is still up.
-This integration repeats that exchange (reconstructed from the app's code, so the first
-real run may need fixes). After pairing, everything is local and works with no internet.
+This integration repeats that exchange, reconstructed from the app's code and checked
+against a capture of the app's traffic (`tools/capture_app.py`, see `APZ-451-protocol.md`
+section 14.8). The registration calls themselves have not been captured yet, so the first
+real run may need fixes. After pairing, everything is local and works with no internet.
 
 Or skip pairing and paste a key you already have (base64 such as
 `AAECAwQFBgcICQoLDA0ODw==`, or 32 hex characters). **Save the key** - it is shown by
@@ -32,13 +40,17 @@ On any computer with Bluetooth, Python 3.11+:
 pip install bleak bleak-retry-connector cryptography
 git clone https://github.com/NicholasBly/ha-germguardian
 cd ha-germguardian
-python tools/gg_probe.py --pair                  # then hold LINK; prints your key
+python tools/gg_probe.py --pair                  # start it, walk over, hold LINK; prints your key
 python tools/gg_probe.py --key YOUR_KEY          # control test
 python tools/gg_probe.py --key YOUR_KEY --on     # also turns it on
 ```
 
 Close the phone app first (the purifier talks to one device at a time). You want to see
 `AUTHENTICATED` and a status line. If it fails, send the full output.
+
+`--pair` waits up to 90 s for the purifier's LINK signal, so you can start it and walk to
+the unit. If Windows never shows the signal, use
+`--address 00:1C:4D:4B:XX:XX --delay 20` (counts down 20 s, then starts anyway).
 
 ## Install in Home Assistant
 
@@ -54,6 +66,23 @@ Close the phone app first (the purifier talks to one device at a time). You want
 Home Assistant needs a Bluetooth adapter or an ESPHome Bluetooth proxy within range. Keep
 the phone app closed.
 
+### "No purifiers found" when adding
+
+The message now says why:
+- *no Bluetooth adapter or proxy*: Home Assistant has nothing that can connect to Bluetooth
+  devices. Check Settings -> Devices & services -> Bluetooth.
+- *can see N devices, none is a purifier*: Home Assistant's Bluetooth works but cannot hear
+  the unit. Put the adapter or proxy within ~10 ft (3 m) of it, make sure the unit is on, and
+  close the phone app (a connected phone can hide the unit). To see what Home Assistant
+  hears, open Settings -> Devices & services -> Bluetooth -> Configure -> advertisement
+  monitor and look for an address starting `00:1C:4D:`.
+
+## Capturing the official app (for developers)
+
+`tools/capture_app.py` runs mitmproxy and logs the app's traffic to `a_iots_capture.txt`
+(it prints the iPhone steps). The log contains your unit's ID and, if you pair during the
+capture, your key - do not post it publicly.
+
 ## How it works
 
 The integration connects briefly every 30 s (and for each command), authenticates with the
@@ -61,4 +90,4 @@ key, reads or writes, and disconnects.
 
 ## Tests
 
-`pip install pytest cryptography && pytest`
+`pip install pytest cryptography voluptuous && pytest`
