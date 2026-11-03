@@ -37,6 +37,7 @@ async def main():
         if m and (not a.address or d.address.lower() == a.address.lower()):
             cands.append((d, m))
             print("  ", d.address, adv.rssi, m)
+    cands.sort(key=lambda c: c[0].address)
     dev, master = (None, None)
     if len(cands) == 1:
         dev, master = cands[0]
