@@ -204,3 +204,72 @@ def test_pairing_refuses_a_gateway():
     with pytest.raises(PR.PairError, match="not a purifier"):
         PR.ensure_purifier(info)
     PR.ensure_purifier(asyncio.run(PR.validate(FakeServer(), MASTER)))   # purifier passes
+
+
+# ---- Linux/BlueZ sends a real Write Request; a characteristic that only takes Write Commands refuses it ----
+class _Char:
+    def __init__(self, props):
+        self.properties = props
+
+
+class _Services:
+    def __init__(self, props_by_uuid):
+        self._p = props_by_uuid
+
+    def get_characteristic(self, uuid):
+        return _Char(self._p.get(uuid, ["read", "write"]))
+
+
+class WriteCommandOnlyUnit(FakeUnit):
+    """Registry characteristics accept only Write Command, like a strict stack would enforce."""
+    REG = None
+
+    def __init__(self, know_props=True, **kw):
+        super().__init__(**kw)
+        self.modes = []
+        self.REG = (PR.U_F010, PR.U_F011, C.U_F012)
+        if know_props:
+            self.services = _Services({u: ["write-without-response"] for u in self.REG})
+
+    async def write_gatt_char(self, u, d, response=False):
+        if u in self.REG:
+            self.modes.append((u, response))
+            if response:
+                raise RuntimeError("Write Not Permitted")      # ATT 0x03 from the unit
+        return await super().write_gatt_char(u, d, response)
+
+
+def test_pairing_writes_the_way_the_characteristic_allows():
+    unit, server = WriteCommandOnlyUnit(has_key=True), FakeServer()
+    assert run(unit, server) == UNIT_KEY
+    assert all(resp is False for _, resp in unit.modes)       # never even tried a Write Request
+
+
+def test_pairing_falls_back_to_write_command_when_properties_are_unknown():
+    unit, server = WriteCommandOnlyUnit(know_props=False, has_key=True), FakeServer()
+    assert run(unit, server) == UNIT_KEY
+    assert unit.modes[0] == (PR.U_F010, True)                 # tried the default first
+    assert any(resp is False for _, resp in unit.modes)        # then the other way
+
+
+def test_a_unit_that_refuses_both_ways_is_reported_not_hidden():
+    class Refuses(FakeUnit):
+        async def write_gatt_char(self, u, d, response=False):
+            if u == PR.U_F010:
+                raise RuntimeError("Write Not Permitted")
+            return await super().write_gatt_char(u, d, response)
+    with pytest.raises(PR.PairError, match="refused registry mode.*Write Not Permitted"):
+        run(Refuses(has_key=True), FakeServer())
+
+
+def test_characteristic_table_summary_for_the_log():
+    unit = WriteCommandOnlyUnit()
+    s = PR.gatt_summary(unit, [PR.U_F010, C.U_F004])
+    assert "f010:write-without-response" in s and "f004:read/write" in s
+    assert "unavailable" in PR.gatt_summary(FakeUnit(), [PR.U_F010])     # no table: say so, don't crash
+
+
+def test_gateway_message_names_the_gateway():
+    info = asyncio.run(PR.validate(FakeServer(), GATEWAY))
+    with pytest.raises(PR.PairError, match="is a gateway"):
+        PR.ensure_purifier(info)

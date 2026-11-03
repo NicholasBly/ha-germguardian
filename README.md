@@ -4,7 +4,7 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.4).**
+**Status: test version (0.1.5).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
 - **Pairing through Aplix's server: works.** Run against a real APZ-451 with LINK held, it

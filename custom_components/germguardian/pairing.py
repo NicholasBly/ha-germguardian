@@ -216,22 +216,69 @@ async def validate(http: Any, master_uuid: str) -> Validated:
 def ensure_purifier(info: Validated) -> None:
     """The integration only drives purifiers; refuse gateways and anything else."""
     if not info.is_purifier:
+        if GATEWAY_TYPE in info.types:
+            raise PairError("the server says this unit is a gateway, not a purifier - pick the other unit")
         kind = ", ".join(info.types) or "unknown"
-        raise PairError(
-            f"the server says this unit is not a purifier (type {kind}; a gateway is type "
-            f"{GATEWAY_TYPE}) - pick the purifier instead"
+        raise PairError(f"the server says this unit is not a purifier (type {kind}) - pick the purifier instead")
+
+
+def _write_mode(client: Any, uuid: str) -> bool | None:
+    """True = Write Request, False = Write Command, None = the table does not say."""
+    try:
+        props = set(client.services.get_characteristic(uuid).properties)
+    except Exception:  # noqa: BLE001 - no table (or no such characteristic)
+        return None
+    if "write" in props:
+        return True
+    if "write-without-response" in props:
+        return False
+    return None
+
+
+async def write_adaptive(client: Any, uuid: str, data: bytes, mode: bool | None = None) -> bool:
+    """Write the way the characteristic allows; if refused, once the other way.
+
+    Windows quietly adapts a Write Request to what a characteristic supports; Linux (BlueZ)
+    sends exactly what was asked, and a unit that only takes Write Commands answers a
+    Write Request with 'Write Not Permitted'. Returns the mode that worked (reuse it).
+    """
+    if mode is None:
+        mode = _write_mode(client, uuid)
+    if mode is None:
+        mode = True
+    try:
+        await client.write_gatt_char(uuid, data, response=mode)
+        return mode
+    except Exception as first:  # noqa: BLE001
+        try:
+            await client.write_gatt_char(uuid, data, response=not mode)
+        except Exception:  # noqa: BLE001
+            raise first from None
+    _LOGGER.warning(
+        "pairing: %s refused a write %s but accepted it %s", uuid[4:8],
+        "request" if mode else "command", "command" if mode else "request",
+    )
+    return not mode
+
+
+def gatt_summary(client: Any, uuids: Iterable[str]) -> str:
+    """'f010:write-without-response f004:read/write ...' for the log."""
+    try:
+        return " ".join(
+            f"{u[4:8]}:{'/'.join(client.services.get_characteristic(u).properties)}" for u in uuids
         )
+    except Exception as err:  # noqa: BLE001
+        return f"(unavailable: {err})"
 
 
 async def carousel_write(client: Any, uuid: str, data: bytes) -> None:
     if len(data) > BLOCK * MAX_BLOCKS or not data:
         raise PairError(f"blob of {len(data)} bytes does not fit a carousel")
     n = -(-len(data) // BLOCK)
+    mode: bool | None = None
     for i in range(1, n + 1):
         hdr = i | (0x80 if i == n else 0)
-        await client.write_gatt_char(
-            uuid, bytes([hdr]) + data[(i - 1) * BLOCK:i * BLOCK], response=True
-        )
+        mode = await write_adaptive(client, uuid, bytes([hdr]) + data[(i - 1) * BLOCK:i * BLOCK], mode)
 
 
 async def carousel_read(client: Any, uuid: str) -> bytes:
@@ -283,6 +330,7 @@ async def pair(
     await client.write_gatt_char(U_F000, protocol_number.to_bytes(4, "little"), response=False)
 
     # 2. default-key CRAM via the server
+    say("Characteristics: " + gatt_summary(client, [U_F000, U_F004, U_F005, U_F010, U_F011, U_F012]))
     say("Authenticating with the factory key")
     d_chal = bytes(await client.read_gatt_char(U_F004))[:16]
     _, b = await post("/imper", body_get_challenge(master_uuid, d_chal))
@@ -318,7 +366,7 @@ async def pair(
     sel = key_id.to_bytes(2, "big")
 
     async def read_slot() -> bytes | None:
-        await client.write_gatt_char(U_F012, sel, response=True)
+        await write_adaptive(client, U_F012, sel)
         blob = await carousel_read(client, U_F011)
         _, b = await post("/setup", body_setup(
             "decryptLocalKey", master_uuid, data=base64.b64encode(blob).decode()
@@ -341,7 +389,7 @@ async def pair(
 
     # 5. empty slot: have the server issue one
     say("Creating a new key")
-    await client.write_gatt_char(U_F012, sel, response=True)
+    await write_adaptive(client, U_F012, sel)
     _, blob = await post(
         "/setup", body_setup("generateLocalKey", master_uuid, central=True, keyId=key_id)
     )
