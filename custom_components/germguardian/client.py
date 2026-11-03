@@ -41,6 +41,10 @@ class CommError(GuardianError):
     """Link or protocol failure."""
 
 
+class UnlockError(CommError):
+    """The unit refused the purifier handshake (usually a different Aplix product)."""
+
+
 class Session:
     def __init__(self, client: Any, key: bytes, protocol_number: int) -> None:
         self._c = client
@@ -86,7 +90,7 @@ class Session:
         try:
             d_chal = bytes(await self._c.read_gatt_char(U_F004))[:16]
         except Exception as err:  # noqa: BLE001
-            raise CommError(f"cannot read challenge: {err}") from err
+            raise UnlockError(f"cannot read challenge: {err}") from err
         if len(d_chal) != 16:
             return False
         try:

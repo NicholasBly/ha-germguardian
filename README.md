@@ -4,12 +4,11 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.1).**
+**Status: test version (0.1.2).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
-- **Pairing through Aplix's server: not working yet.** The first attempts were refused with
-  HTTP 403; the requests now match a capture of the official app (see below), but this
-  has not been confirmed on a real unit.
+- **Pairing through Aplix's server: works** (the whole exchange completed against the live
+  server on a real Aplix unit). Pairing a *purifier* with LINK held is still to be confirmed.
 - **Home Assistant glue: not yet confirmed on a live Home Assistant.** Expect to report bugs.
 
 If you already have a key, you do not need pairing at all: paste it in the setup form.
@@ -48,8 +47,8 @@ python tools/gg_probe.py --key YOUR_KEY --on     # also turns it on
 Close the phone app first (the purifier talks to one device at a time). You want to see
 `AUTHENTICATED` and a status line. If it fails, send the full output.
 
-`--pair` waits up to 90 s for the purifier's LINK signal, so you can start it and walk to
-the unit. If Windows never shows the signal, use
+`--pair` asks Aplix's server which nearby Aplix units are purifiers (a gateway is ignored),
+then waits up to 90 s for that purifier's LINK signal, so you can start it and walk to the unit. If Windows never shows the signal, use
 `--address 00:1C:4D:4B:XX:XX --delay 20` (counts down 20 s, then starts anyway).
 
 ## Install in Home Assistant

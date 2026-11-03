@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import ssl
-from typing import Any, Awaitable, Callable, NamedTuple
+from typing import Any, Awaitable, Callable, Iterable, NamedTuple
 
 from .client import (
     GuardianError, U_F000, U_F004, U_F005, U_F012, SFX,
@@ -42,7 +42,8 @@ IMPER_VERSION = "20141224"
 # calling. The HTTP User-Agent below, in contrast, honestly names this integration.
 CENTRAL = "i:iPhone18,1"
 CLIENT_INFO = {"model": CENTRAL, "osVersion": "27.2", "sdkVersion": "i:1.6.4."}
-DEVICE_TYPES = ("93240", "82567")   # purifier, gateway: what the app asks about
+PURIFIER_TYPE, GATEWAY_TYPE = "93240", "82567"
+DEVICE_TYPES = (PURIFIER_TYPE, GATEWAY_TYPE)   # what the app asks about
 USER_AGENT = "ha-germguardian (+https://github.com/NicholasBly/ha-germguardian)"
 BLOCK = 16
 MAX_BLOCKS = 15
@@ -104,36 +105,38 @@ class Http:
             self._conn.close()
 
 
-def _plain(master_uuid: str) -> str:
+def plain_id(master_uuid: str) -> str:
+    """The id as the server writes it: no dashes (case is applied where it is sent)."""
     return master_uuid.replace("-", "")
 
 
 def body_get_challenge(master_uuid: str, device_challenge: bytes) -> dict:
     return {
-        "deviceChallenge": device_challenge.hex(), "masterUUID": _plain(master_uuid).lower(),
+        "deviceChallenge": device_challenge.hex(), "masterUUID": plain_id(master_uuid).lower(),
         "clientInformation": CLIENT_INFO, "request": "getChallenge", "version": IMPER_VERSION,
     }
 
 
 def body_verify(master_uuid: str, server_challenge: bytes, device_response: bytes) -> dict:
     return {
-        "clientInformation": CLIENT_INFO, "masterUUID": _plain(master_uuid).lower(),
+        "clientInformation": CLIENT_INFO, "masterUUID": plain_id(master_uuid).lower(),
         "deviceResponse": device_response.hex(), "serverChallenge": server_challenge.hex(),
         "request": "verifyResponse", "version": IMPER_VERSION,
     }
 
 
-def body_validate(master_uuid: str) -> dict:
+def body_validate(master_uuids: "str | Iterable[str]") -> dict:
+    ids = [master_uuids] if isinstance(master_uuids, str) else list(master_uuids)
     return {
         "validateOption": {"types": list(DEVICE_TYPES)}, "clientInformation": CLIENT_INFO,
-        "devices": [{"masterUUID": _plain(master_uuid).lower()}],
+        "devices": [{"masterUUID": plain_id(m).lower()} for m in ids],
         "central": CENTRAL, "request": "validateDevices", "version": VALIDATE_VERSION,
     }
 
 
 def body_setup(request: str, master_uuid: str, *, central: bool = False, **extra: Any) -> dict:
     """Registration calls on /setup. Not captured yet: layout follows the other /setup calls."""
-    o: dict[str, Any] = {"clientInformation": CLIENT_INFO, "masterUUID": _plain(master_uuid).upper()}
+    o: dict[str, Any] = {"clientInformation": CLIENT_INFO, "masterUUID": plain_id(master_uuid).upper()}
     if central:
         o["central"] = CENTRAL
     o.update(extra)
@@ -164,23 +167,60 @@ class Validated(NamedTuple):
     types: list
     function_number: int | None
 
+    @property
+    def is_purifier(self) -> bool:
+        return PURIFIER_TYPE in self.types
+
+
+def _results(body: bytes) -> list[dict]:
+    try:
+        results = json.loads(body)["results"]
+        return [r for r in results if isinstance(r, dict)]
+    except (ValueError, KeyError, TypeError) as err:
+        raise PairError(f"unexpected server reply: {body[:120]!r}") from err
+
+
+def _validated(r: dict) -> Validated:
+    proto = r.get("protocolNumber")
+    return Validated(
+        int(proto) if proto is not None else None,
+        list(r.get("types") or []),
+        r.get("functionNumber"),
+    )
+
+
+async def validate_many(http: Any, master_uuids: Iterable[str]) -> dict[str, Validated]:
+    """Ask the server about several units at once (as the app does).
+
+    Returns {plain lowercase id: Validated} for the units it knows; unknown ones are left out.
+    """
+    body = await _post(http, "/setup", body_validate(master_uuids))
+    return {
+        r["masterUUID"].lower(): _validated(r)
+        for r in _results(body) if r.get("result") == "OK" and "masterUUID" in r
+    }
+
 
 async def validate(http: Any, master_uuid: str) -> Validated:
     """What the app asks first: does the server know this unit, and what protocol does it speak?"""
     body = await _post(http, "/setup", body_validate(master_uuid))
-    try:
-        results = json.loads(body)["results"]
-        mine = next(r for r in results if r["masterUUID"].lower() == _plain(master_uuid).lower())
-    except (ValueError, KeyError, TypeError, StopIteration) as err:
-        raise PairError(f"unexpected server reply: {body[:120]!r}") from err
+    want = plain_id(master_uuid).lower()
+    mine = next((r for r in _results(body) if str(r.get("masterUUID", "")).lower() == want), None)
+    if mine is None:
+        raise PairError(f"unexpected server reply: {body[:120]!r}")
     if mine.get("result") != "OK":
         raise PairError(f"the server does not recognise this unit ({mine.get('result')})")
-    proto = mine.get("protocolNumber")
-    return Validated(
-        int(proto) if proto is not None else None,
-        list(mine.get("types") or []),
-        mine.get("functionNumber"),
-    )
+    return _validated(mine)
+
+
+def ensure_purifier(info: Validated) -> None:
+    """The integration only drives purifiers; refuse gateways and anything else."""
+    if not info.is_purifier:
+        kind = ", ".join(info.types) or "unknown"
+        raise PairError(
+            f"the server says this unit is not a purifier (type {kind}; a gateway is type "
+            f"{GATEWAY_TYPE}) - pick the purifier instead"
+        )
 
 
 async def carousel_write(client: Any, uuid: str, data: bytes) -> None:
@@ -336,6 +376,7 @@ async def pair_over_ble(
         if progress:
             progress("Asking Aplix's server about this unit")
         info = await validate(http, master_uuid)
+        ensure_purifier(info)
         if info.protocol is not None:
             protocol_number = info.protocol
     except BaseException:

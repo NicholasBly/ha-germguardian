@@ -11,7 +11,7 @@ from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from . import protocol as P
-from .client import AuthError, GuardianError, open_session
+from .client import AuthError, GuardianError, UnlockError, open_session
 from .pairing import PairResult, pair_over_ble
 from .const import (
     CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, DEFAULT_PROTOCOL,
@@ -135,6 +135,8 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
             await sess.get_status()
         except AuthError:
             return "invalid_auth"
+        except UnlockError:
+            return "wrong_unit"
         except GuardianError:
             return "cannot_connect"
         finally:

@@ -92,3 +92,15 @@ def test_adapter_works_but_unit_not_heard_reports_count(flow_module):
 def test_unit_already_set_up_is_not_reported_as_missing(flow_module):
     res, _ = run_user(flow_module, [info()], configured=[MASTER])
     assert res["reason"] == "already_configured"
+
+
+def test_gateway_picked_by_mistake_gets_a_clear_message(flow_module, monkeypatch):
+    from germguardian import client
+    async def refuses(*a, **k):
+        raise client.UnlockError("cannot read challenge: Read Not Permitted")
+    monkeypatch.setattr(flow_module, "open_session", refuses)
+    monkeypatch.setattr(flow_module.bluetooth, "async_ble_device_from_address", lambda *a, **k: object())
+    flow = flow_module.GermGuardianFlow()
+    flow.hass = SimpleNamespace()
+    flow._info = info()
+    assert asyncio.run(flow._try(bytes(16), 0xEEF3C48D)) == "wrong_unit"

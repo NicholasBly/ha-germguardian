@@ -5,7 +5,13 @@ from germguardian import pairing as PR, client as C, protocol as P
 K0 = bytes(range(100, 116))
 UNIT_KEY = bytes(range(7, 23))
 MASTER = "00000000-24f6-4000-a000-0fedf19130a2"
+GATEWAY = "00000000-24f6-4000-a000-0a1312c1f600"
 PROTO = 0xEEF3C48D
+GW_PROTO = 0x3821A625
+KNOWN = {   # what the real server told the app: id -> (types, function number, protocol number)
+    MASTER.replace("-", ""): (["93240"], 65551, PROTO),
+    GATEWAY.replace("-", ""): (["82567"], 65548, GW_PROTO),
+}
 
 
 class FakeServer:
@@ -23,11 +29,10 @@ class FakeServer:
             assert path == "/setup"
             res = []
             for d in o["devices"]:
-                known = d["masterUUID"] == MASTER.replace("-", "")
+                types, fn, proto = KNOWN.get(d["masterUUID"], ([], None, None))
                 res.append({
-                    "masterUUID": d["masterUUID"], "result": "OK" if known else "NotAuthenticated",
-                    "types": ["93240"] if known else [], "functionNumber": 65551 if known else None,
-                    "protocolNumber": PROTO if known else None, "deviceName": " ",
+                    "masterUUID": d["masterUUID"], "result": "OK" if types else "NotAuthenticated",
+                    "types": types, "functionNumber": fn, "protocolNumber": proto, "deviceName": " ",
                 })
             return 200, json.dumps({"results": res}).encode()
         if path == "/imper" and o["request"] == "getChallenge":
@@ -173,3 +178,29 @@ def test_403_error_is_readable_and_names_the_front_server():
     msg = str(e.value)
     assert "403" in msg and "awselb" in msg and "403 Forbidden" in msg
     assert "<html>" not in msg and "secret" not in msg
+
+
+CAPTURED_VALIDATE_TWO_LEN = 320   # Content-Length of the app's two-unit validateDevices
+
+
+def test_validate_body_with_two_units_matches_real_app():
+    got = PR.Http.encode(PR.body_validate([MASTER, GATEWAY]))
+    assert len(got) == CAPTURED_VALIDATE_TWO_LEN
+    assert got.count(b'{"masterUUID"') == 2
+
+
+def test_server_tells_purifier_from_gateway():
+    unknown = "00000000-24f6-4000-a000-000000000001"
+    found = asyncio.run(PR.validate_many(FakeServer(), [MASTER, GATEWAY, unknown]))
+    assert found[PR.plain_id(MASTER)].is_purifier
+    assert found[PR.plain_id(MASTER)].protocol == PROTO
+    assert not found[PR.plain_id(GATEWAY)].is_purifier
+    assert found[PR.plain_id(GATEWAY)].protocol == GW_PROTO
+    assert PR.plain_id(unknown) not in found            # never heard of it
+
+
+def test_pairing_refuses_a_gateway():
+    info = asyncio.run(PR.validate(FakeServer(), GATEWAY))
+    with pytest.raises(PR.PairError, match="not a purifier"):
+        PR.ensure_purifier(info)
+    PR.ensure_purifier(asyncio.run(PR.validate(FakeServer(), MASTER)))   # purifier passes

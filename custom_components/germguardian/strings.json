@@ -25,7 +25,8 @@
       "cannot_connect": "Connected, but the purifier did not answer. Try again.",
       "invalid_auth": "The purifier rejected this key. It belongs to a different unit or slot.",
       "pair_failed": "Pairing failed - see the Home Assistant log (\"pairing failed\"). Keep LINK held, stay close to the unit, and check internet access.",
-      "no_master_uuid": "This unit's Bluetooth ID could not be read, so it cannot be paired from here. Paste a key instead, or use tools/gg_probe.py --pair."
+      "no_master_uuid": "This unit's Bluetooth ID could not be read, so it cannot be paired from here. Paste a key instead, or use tools/gg_probe.py --pair.",
+      "wrong_unit": "This device did not accept the purifier handshake. It is probably a different Aplix product (for example a gateway). Go back and choose the other unit."
     },
     "abort": {
       "no_scanner": "Home Assistant has no Bluetooth adapter or Bluetooth proxy that can connect to devices, so it cannot find the purifier. Check Settings > Devices & services > Bluetooth, add an adapter or an ESPHome Bluetooth proxy, then try again.",

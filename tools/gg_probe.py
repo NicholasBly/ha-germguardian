@@ -59,6 +59,23 @@ async def main():
     def pick(us):
         return [u for u in us if not a.address or u[1].address.upper() == a.address.upper()]
 
+    http, is_purifier = PR.Http(), {}     # server's verdict per unit: plain id -> bool
+
+    async def purifiers_only(us):
+        """Ask Aplix's server which of these units are purifiers (the other kind is a gateway)."""
+        new = [u for u in us if PR.plain_id(u[2]).lower() not in is_purifier]
+        if new:
+            try:
+                found = await PR.validate_many(http, [u[2] for u in new])
+            except PR.PairError as e:
+                sys.exit(f"Cannot ask Aplix's server which unit is the purifier: {e}")
+            for _, d, m in new:
+                v = found.get(PR.plain_id(m).lower())
+                is_purifier[PR.plain_id(m).lower()] = bool(v and v.is_purifier)
+                print("  %s: %s" % (d.address, "purifier" if is_purifier[PR.plain_id(m).lower()]
+                                    else "not a purifier (ignored)"))
+        return [u for u in us if is_purifier.get(PR.plain_id(u[2]).lower())]
+
     scanner = BleakScanner(detection_callback=cb)
     await scanner.start()
     try:
@@ -67,7 +84,7 @@ async def main():
             print("I'm watching for it (up to %d s) - keep holding until I say DONE.\n" % a.wait)
             target = None
             for t in range(a.wait):
-                us = pick(units(seen))
+                us = await purifiers_only(pick(units(seen)))
                 if a.delay is not None:
                     if t >= a.delay and us:
                         target = us[0]; break
@@ -76,7 +93,7 @@ async def main():
                     if lm:
                         target = lm[0]; break
                 if t % 5 == 4:
-                    print("  ... waiting (%d Aplix unit(s) seen)" % len(us))
+                    print("  ... waiting (%d purifier(s) in range)" % len(us))
                 await asyncio.sleep(1)
             if not target:
                 sys.exit("Never saw a unit in LINK mode. Is the button held until it signals?\n"
@@ -111,8 +128,8 @@ async def main():
         print("connecting to", dev.address)
         try:
             client, s = await C.open_session(dev, key, proto)
-        except Exception as e:
-            print("  not this one:", e)
+        except (Exception, asyncio.CancelledError) as e:     # bleak/winrt can cancel a connect
+            print("  not this one:", e or type(e).__name__)
             continue
         try:
             print("AUTHENTICATED")
@@ -124,6 +141,9 @@ async def main():
         finally:
             await client.disconnect()
         return
+    if a.pair:
+        sys.exit("Pairing finished (key above - save it), but reconnecting with it failed. "
+                 "Wait a few seconds and run:  python tools/gg_probe.py --key <key>")
     sys.exit("No unit accepted that key.")
 
 asyncio.run(main())

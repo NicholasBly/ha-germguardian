@@ -47,3 +47,15 @@ def test_wrong_protocol_number_cannot_read():
         with pytest.raises(C.CommError):
             await s.authenticate()
     asyncio.run(go())
+
+
+def test_unit_that_refuses_the_unlock_is_reported_as_wrong_unit():
+    class Refuses(FakePurifier):
+        async def read_gatt_char(self, uuid):
+            raise OSError("Read Not Permitted")     # what a gateway does to the purifier handshake
+    async def go():
+        s = await _session(Refuses(KEY))
+        with pytest.raises(C.UnlockError):
+            await s.authenticate()
+    asyncio.run(go())
+    assert issubclass(C.UnlockError, C.CommError)
