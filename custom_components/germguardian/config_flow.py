@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -30,6 +31,9 @@ PAIR_RETRY_DELAY = 3.0
 LINK_WAIT_SECONDS = 20.0
 LINK_POLL_SECONDS = 0.5
 LINK_PREFIXES = ("C1", "C2", "C3")
+# Home Assistant keeps the last advertisement of every device for minutes, so a beacon only
+# counts as "LINK is held right now" if it was heard in the last few seconds.
+LINK_FRESH_SECONDS = 5.0
 
 
 def master_uuid(info: BluetoothServiceInfoBleak) -> str | None:
@@ -40,10 +44,16 @@ def master_uuid(info: BluetoothServiceInfoBleak) -> str | None:
 
 
 def link_visible(hass, address: str) -> bool:
-    """Is the LINK beacon of the unit at `address` on the air right now?"""
+    """Is the LINK beacon of the unit at `address` on the air right now?
+
+    Not just remembered: `info.time` (monotonic) says when it was last heard.
+    """
     tail = address.upper()[3:]
+    now = time.monotonic()
     return any(
-        i.address[:2].upper() in LINK_PREFIXES and i.address.upper()[3:] == tail
+        i.address[:2].upper() in LINK_PREFIXES
+        and i.address.upper()[3:] == tail
+        and now - getattr(i, "time", now) <= LINK_FRESH_SECONDS
         for i in bluetooth.async_discovered_service_info(hass, connectable=False)
     )
 
@@ -217,4 +227,8 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
                 "pairing failed: %s (LINK signal visible now: %s)", err, link_visible(self.hass, addr)
             )
             self._pair_error = str(err)
+            return None, "pair_failed"
+        except Exception as err:  # noqa: BLE001 - show a reason on the form, not "Unknown error"
+            _LOGGER.exception("pairing failed unexpectedly")
+            self._pair_error = f"unexpected {type(err).__name__}: {err}"
             return None, "pair_failed"

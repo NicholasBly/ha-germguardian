@@ -199,6 +199,33 @@ def test_link_signal_is_recognised_per_unit(flow_module):
     assert not flow_module.link_visible(SimpleNamespace(infos=[info()]), UNIT_ADDR)   # the unit itself
 
 
+def test_an_old_link_signal_does_not_count(flow_module):
+    """HA remembers the last advertisement of every device for minutes. A beacon from the
+    previous attempt must not make the next attempt think LINK is held right now."""
+    import time
+    old = info("C2:1C:4D:4B:F0:80", uuids=(), connectable=False)
+    old.time = time.monotonic() - 60
+    fresh = info("C2:1C:4D:4B:F0:80", uuids=(), connectable=False)
+    fresh.time = time.monotonic() - 1
+    assert not flow_module.link_visible(SimpleNamespace(infos=[old]), UNIT_ADDR)
+    assert flow_module.link_visible(SimpleNamespace(infos=[old, fresh]), UNIT_ADDR)
+
+
+def test_an_unexpected_error_is_a_pairing_failure_with_a_reason_not_unknown_error(
+    flow_module, monkeypatch, caplog
+):
+    flow, _, _ = _pair_flow(flow_module, monkeypatch, [[LINK_BEACON]])
+
+    async def boom(*a, **k):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(flow_module, "pair_over_ble", boom)
+    res, err = asyncio.run(flow._pair(0xEEF3C48D))
+    assert res is None and err == "pair_failed"
+    assert "kaboom" in flow._pair_error                  # shown on the form
+    assert "kaboom" in caplog.text                       # and logged with its traceback
+
+
 def test_pairing_waits_for_link_then_goes(flow_module, monkeypatch):
     flow, looks, paired = _pair_flow(flow_module, monkeypatch, [[], [], [OTHER_UNITS_BEACON], [LINK_BEACON]])
     res, err = asyncio.run(flow._pair(0xEEF3C48D))

@@ -4,12 +4,14 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.5).**
+**Status: test version (0.1.6).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
 - **Pairing through Aplix's server: works.** Run against a real APZ-451 with LINK held, it
   returned the same key the phone app uses (an already-paired unit is read back, not reset).
-- **Home Assistant glue: not yet confirmed on a live Home Assistant.** Expect to report bugs.
+- **Home Assistant: pairing and control confirmed on a real purifier** (Raspberry Pi, Home
+  Assistant in Docker). Only on/off has been checked so far; fan speeds, the UV switch, the
+  timer and the sensors are not confirmed yet, so expect to report bugs.
 
 If you already have a key, you do not need pairing at all: paste it in the setup form.
 
@@ -59,8 +61,10 @@ then waits up to 90 s for that purifier's LINK signal, so you can start it and w
 3. The purifier should appear under Settings -> Devices & services as *Discovered*. If not,
    click **Add integration** -> GermGuardian BLE.
 4. Choose your model. To pair: leave the key empty, press **Submit**, then within 20 s press
-   and HOLD LINK and keep holding it until the form finishes (it starts as soon as it sees
-   the LINK signal). Otherwise paste a key. Leave the protocol number alone. The form checks
+   and HOLD LINK and keep holding it until the form finishes - up to about a minute (it
+   starts as soon as it hears the LINK signal and tries up to 3 times by itself if the
+   purifier is slow to open its key registry). Do not let go and press again; if it still
+   fails, wait for the message, then press Submit and hold LINK once more. Otherwise paste a key. Leave the protocol number alone. The form checks
    the key against the unit before saving. Pairing writes its steps to the Home Assistant
    log as lines starting `pairing:` (for Docker: `docker logs homeassistant 2>&1 | grep -i pairing`).
 

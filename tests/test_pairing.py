@@ -245,21 +245,160 @@ def test_pairing_writes_the_way_the_characteristic_allows():
     assert all(resp is False for _, resp in unit.modes)       # never even tried a Write Request
 
 
-def test_pairing_falls_back_to_write_command_when_properties_are_unknown():
+@pytest.fixture(autouse=True)
+def _no_waiting(monkeypatch):
+    monkeypatch.setattr(PR, "REGISTRY_RETRY_DELAY", 0, raising=False)
+    monkeypatch.setattr(PR, "PAIR_ROUND_PAUSE", 0, raising=False)
+
+
+def test_a_refused_write_request_is_never_retried_as_a_write_command():
+    """A Write Command cannot be refused (nothing answers it), so 'retrying' one would only hide
+    the unit's real answer - registry mode is closed - and fail later, somewhere confusing."""
     unit, server = WriteCommandOnlyUnit(know_props=False, has_key=True), FakeServer()
+    with pytest.raises(PR.RegistryError, match="refused registry mode.*Write Not Permitted"):
+        run(unit, server)
+    f010 = [resp for u, resp in unit.modes if u == PR.U_F010]
+    assert f010 and all(resp is True for resp in f010)          # only ever Write Requests
+    assert len(f010) == PR.REGISTRY_TRIES                       # it asked a few times, then stopped
+
+
+class RefusesFirst(FakeUnit):
+    """Registry mode is closed for the first `refusals` writes to f010, then LINK 'takes'."""
+    def __init__(self, refusals, **kw):
+        super().__init__(**kw)
+        self.left = refusals
+
+    async def write_gatt_char(self, u, d, response=False):
+        if u == PR.U_F010 and self.left > 0:
+            self.left -= 1
+            raise RuntimeError("Write Not Permitted")
+        return await super().write_gatt_char(u, d, response)
+
+
+def test_registry_mode_is_asked_for_repeatedly_while_link_gets_going():
+    unit, server = RefusesFirst(PR.REGISTRY_TRIES - 1, has_key=True), FakeServer()
     assert run(unit, server) == UNIT_KEY
-    assert unit.modes[0] == (PR.U_F010, True)                 # tried the default first
-    assert any(resp is False for _, resp in unit.modes)        # then the other way
+    asked = [c for c in server.calls if c == ("/setup", "getRegistryModeData")]
+    assert len(asked) == PR.REGISTRY_TRIES                      # a fresh blob for every try
 
 
-def test_a_unit_that_refuses_both_ways_is_reported_not_hidden():
-    class Refuses(FakeUnit):
-        async def write_gatt_char(self, u, d, response=False):
-            if u == PR.U_F010:
-                raise RuntimeError("Write Not Permitted")
-            return await super().write_gatt_char(u, d, response)
-    with pytest.raises(PR.PairError, match="refused registry mode.*Write Not Permitted"):
-        run(Refuses(has_key=True), FakeServer())
+def test_a_unit_that_never_opens_registry_mode_is_reported_not_hidden():
+    with pytest.raises(PR.RegistryError, match="refused registry mode.*Write Not Permitted"):
+        run(RefusesFirst(10 ** 6, has_key=True), FakeServer())
+
+
+def test_a_server_problem_is_not_blamed_on_link():
+    class Broken(FakeServer):
+        def post_json(self, path, o):
+            if o["request"] == "getRegistryModeData":
+                return 500, b"oops"
+            return super().post_json(path, o)
+    with pytest.raises(PR.PairError) as err:
+        run(FakeUnit(has_key=True), Broken())
+    assert not isinstance(err.value, PR.RegistryError)           # retrying the unit will not help
+    assert "LINK" not in str(err.value)
+
+
+class NoSlotYet(FakeUnit):
+    async def read_gatt_char(self, u):
+        if u == PR.U_F011:
+            raise RuntimeError("Read Not Permitted")
+        return await super().read_gatt_char(u)
+
+
+def test_reading_the_slot_before_registry_mode_is_a_clean_error_not_a_crash():
+    with pytest.raises(PR.RegistryError, match="key slot.*LINK.*Read Not Permitted"):
+        run(NoSlotYet(has_key=True), FakeServer())
+
+
+# ---- pair_over_ble: connect, pair, and start again on a fresh connection if the unit says 'not yet' ----
+@pytest.fixture
+def ble(monkeypatch):
+    import sys
+    import types
+    st = types.SimpleNamespace(connects=0, disconnects=0, http_closed=0, outcomes=[], progress=[],
+                               connect_error=None)
+
+    class Client:
+        async def disconnect(self):
+            st.disconnects += 1
+
+    async def establish_connection(cls, dev, name, max_attempts=3, **kw):
+        st.connects += 1
+        if st.connect_error:
+            raise st.connect_error
+        return Client()
+
+    mod = types.ModuleType("bleak_retry_connector")
+    mod.BleakClientWithServiceCache, mod.establish_connection = object, establish_connection
+    monkeypatch.setitem(sys.modules, "bleak_retry_connector", mod)
+
+    class FakeHttp:
+        def warm(self):
+            pass
+
+        def close(self):
+            st.http_closed += 1
+
+    async def fake_validate(http, mu):
+        return PR.Validated(PROTO, ["93240"], 65551)
+
+    async def fake_pair(client, mu, http, proto, key_id=1, progress=None):
+        outcome = st.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(PR, "Http", FakeHttp)
+    monkeypatch.setattr(PR, "validate", fake_validate)
+    monkeypatch.setattr(PR, "pair", fake_pair)
+    return st
+
+
+def run_ble(st):
+    dev = types_ns(address="00:1C:4D:4B:F0:80")
+    return asyncio.run(PR.pair_over_ble(dev, MASTER, PROTO, progress=st.progress.append))
+
+
+def types_ns(**kw):
+    from types import SimpleNamespace
+    return SimpleNamespace(**kw)
+
+
+def test_pairing_starts_again_on_a_fresh_connection_when_registry_mode_is_closed(ble):
+    ble.outcomes = [PR.RegistryError("not yet"), UNIT_KEY]
+    res = run_ble(ble)
+    assert res.key == UNIT_KEY and res.protocol == PROTO
+    assert ble.connects == 2 and ble.disconnects == 2 and ble.http_closed == 1
+    assert any("attempt 2" in m for m in ble.progress)           # the HA log shows it
+
+
+def test_pairing_gives_up_after_the_last_round(ble):
+    ble.outcomes = [PR.RegistryError("not yet")] * 20
+    with pytest.raises(PR.RegistryError):
+        run_ble(ble)
+    assert ble.connects == PR.PAIR_ROUNDS == ble.disconnects and ble.http_closed == 1
+
+
+def test_other_pairing_errors_are_not_retried(ble):
+    ble.outcomes = [PR.PairError("server returned key id 2, wanted 1")]
+    with pytest.raises(PR.PairError, match="key id"):
+        run_ble(ble)
+    assert ble.connects == 1 and ble.disconnects == 1
+
+
+def test_a_surprise_exception_becomes_a_pairing_error_and_cleans_up(ble):
+    ble.outcomes = [RuntimeError("boom")]
+    with pytest.raises(PR.PairError, match="boom"):
+        run_ble(ble)
+    assert ble.disconnects == 1 and ble.http_closed == 1
+
+
+def test_a_failed_connection_is_a_pairing_error(ble):
+    ble.connect_error = OSError("adapter busy")
+    with pytest.raises(PR.PairError, match="cannot connect.*adapter busy"):
+        run_ble(ble)
+    assert ble.http_closed == 1
 
 
 def test_characteristic_table_summary_for_the_log():

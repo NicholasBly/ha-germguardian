@@ -48,9 +48,23 @@ USER_AGENT = "ha-germguardian (+https://github.com/NicholasBly/ha-germguardian)"
 BLOCK = 16
 MAX_BLOCKS = 15
 
+# The unit only opens its key registry while LINK is held, and it can take a moment to
+# notice. Ask a few times on one connection, then start over on a fresh connection.
+REGISTRY_TRIES = 8              # asks per connection (the app itself asks 6 times)
+REGISTRY_RETRY_DELAY = 0.6      # seconds between asks
+PAIR_ROUNDS = 3                 # connections to try before giving up
+PAIR_ROUND_PAUSE = 2.0          # seconds between connections
+
 
 class PairError(GuardianError):
     """Pairing failed."""
+
+
+class RegistryError(PairError):
+    """The unit would not open (or read) its key registry - LINK is not held (yet).
+
+    Worth another try on a fresh connection; other pairing errors are not.
+    """
 
 
 class Http:
@@ -236,29 +250,20 @@ def _write_mode(client: Any, uuid: str) -> bool | None:
 
 
 async def write_adaptive(client: Any, uuid: str, data: bytes, mode: bool | None = None) -> bool:
-    """Write the way the characteristic allows; if refused, once the other way.
+    """Write the way the characteristic's property table says (Request if it is unclear).
 
     Windows quietly adapts a Write Request to what a characteristic supports; Linux (BlueZ)
-    sends exactly what was asked, and a unit that only takes Write Commands answers a
-    Write Request with 'Write Not Permitted'. Returns the mode that worked (reuse it).
+    sends exactly what was asked. Returns the mode used (reuse it for the next block).
+
+    A refused write is NOT retried the other way: a Write Command is never answered, so it
+    can never be refused, and 'succeeding' with one only hides the unit's real answer.
     """
     if mode is None:
         mode = _write_mode(client, uuid)
     if mode is None:
         mode = True
-    try:
-        await client.write_gatt_char(uuid, data, response=mode)
-        return mode
-    except Exception as first:  # noqa: BLE001
-        try:
-            await client.write_gatt_char(uuid, data, response=not mode)
-        except Exception:  # noqa: BLE001
-            raise first from None
-    _LOGGER.warning(
-        "pairing: %s refused a write %s but accepted it %s", uuid[4:8],
-        "request" if mode else "command", "command" if mode else "request",
-    )
-    return not mode
+    await client.write_gatt_char(uuid, data, response=mode)
+    return mode
 
 
 def gatt_summary(client: Any, uuids: Iterable[str]) -> str:
@@ -346,28 +351,41 @@ async def pair(
     if jload(b).get("result") != "OK":
         raise PairError("the server rejected the unit's answer (wrong masterUuid?)")
 
-    # 3. registry mode (the app retries up to 6 times, 500 ms apart)
+    # 3. registry mode. The unit answers 'Write Not Permitted' until LINK is held and noticed,
+    #    so ask again a few times (the app asks 6 times, 500 ms apart).
     say("Entering registry mode - keep holding LINK")
     last: Exception | None = None
-    for _ in range(6):
+    for attempt in range(REGISTRY_TRIES):
+        # A server problem is not the unit's fault: let it through as an ordinary error.
+        _, blob = await post(
+            "/setup", body_setup("getRegistryModeData", master_uuid, central=True)
+        )
         try:
-            _, blob = await post(
-                "/setup", body_setup("getRegistryModeData", master_uuid, central=True)
-            )
             await carousel_write(client, U_F010, blob)
-            last = None
-            break
-        except Exception as err:  # noqa: BLE001
+        except PairError:
+            raise
+        except Exception as err:  # noqa: BLE001 - the unit's answer (or a lost link)
             last = err
-            await asyncio.sleep(0.5)
+            _LOGGER.debug("pairing: registry mode try %d refused: %s", attempt + 1, err)
+            await asyncio.sleep(REGISTRY_RETRY_DELAY)
+            continue
+        last = None
+        break
     if last is not None:
-        raise PairError(f"unit refused registry mode (is LINK held?): {last}") from last
+        raise RegistryError(f"unit refused registry mode (is LINK held?): {last}") from last
 
     sel = key_id.to_bytes(2, "big")
 
     async def read_slot() -> bytes | None:
-        await write_adaptive(client, U_F012, sel)
-        blob = await carousel_read(client, U_F011)
+        try:
+            await write_adaptive(client, U_F012, sel)
+            blob = await carousel_read(client, U_F011)
+        except PairError:
+            raise
+        except Exception as err:  # noqa: BLE001 - the unit refuses this until registry mode is open
+            raise RegistryError(
+                f"cannot read the key slot (registry mode is not open - is LINK held?): {err}"
+            ) from err
         _, b = await post("/setup", body_setup(
             "decryptLocalKey", master_uuid, data=base64.b64encode(blob).decode()
         ))
@@ -412,39 +430,52 @@ async def pair_over_ble(
 
     Used by the CLI and config flow. The protocol number the server reports for the
     unit wins over `protocol_number`; the one actually used is returned with the key.
+
+    If the unit will not open its key registry (LINK not held yet), it starts over on a
+    fresh connection, up to PAIR_ROUNDS times. Every failure leaves as a PairError.
     """
     from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
+    say = progress or (lambda _m: None)
     http = Http()
     try:
-        await asyncio.to_thread(http.warm)
-    except OSError as err:
-        raise PairError(f"cannot reach {HOST}: {err}") from err
-    try:
-        if progress:
-            progress("Asking Aplix's server about this unit")
+        try:
+            await asyncio.to_thread(http.warm)
+        except OSError as err:
+            raise PairError(f"cannot reach {HOST}: {err}") from err
+        say("Asking Aplix's server about this unit")
         info = await validate(http, master_uuid)
         ensure_purifier(info)
         if info.protocol is not None:
             protocol_number = info.protocol
-    except BaseException:
-        http.close()
-        raise
-    try:
-        if progress:
-            progress("Connecting to the purifier")
-        client = await establish_connection(
-            BleakClientWithServiceCache, ble_device, ble_device.address, max_attempts=3
-        )
-    except Exception as err:  # noqa: BLE001
-        http.close()
-        raise PairError(f"cannot connect: {err}") from err
-    try:
-        key = await pair(client, master_uuid, http, protocol_number, progress=progress)
-        return PairResult(key, protocol_number)
+        for rnd in range(1, PAIR_ROUNDS + 1):
+            say(
+                "Connecting to the purifier" if rnd == 1 else
+                f"Connecting again (attempt {rnd} of {PAIR_ROUNDS}) - keep holding LINK"
+            )
+            try:
+                client = await establish_connection(
+                    BleakClientWithServiceCache, ble_device, ble_device.address, max_attempts=3
+                )
+            except Exception as err:  # noqa: BLE001
+                raise PairError(f"cannot connect: {err}") from err
+            try:
+                key = await pair(client, master_uuid, http, protocol_number, progress=progress)
+                return PairResult(key, protocol_number)
+            except RegistryError as err:
+                if rnd == PAIR_ROUNDS:
+                    raise
+                say(f"The purifier is not ready yet: {err}")
+            except GuardianError:
+                raise
+            except Exception as err:  # noqa: BLE001 - never leak a raw library error
+                raise PairError(f"unexpected {type(err).__name__} while pairing: {err}") from err
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+            await asyncio.sleep(PAIR_ROUND_PAUSE)
+        raise AssertionError("unreachable")   # the last round returns or raises
     finally:
         http.close()
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
