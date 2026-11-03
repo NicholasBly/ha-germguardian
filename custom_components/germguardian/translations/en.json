@@ -1,0 +1,42 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Choose your purifier",
+        "description": "Pick the unit to add. It must be powered on and in Bluetooth range.",
+        "data": {"unit": "Purifier"}
+      },
+      "setup": {
+        "title": "Model and key",
+        "description": "Unit at {address}. The vendor's servers are gone, so this integration cannot pair a unit by itself. Paste the 16-byte local key from a phone that was already paired to this purifier (base64 like `AbC...==`, or 32 hex characters).",
+        "data": {
+          "model": "Model",
+          "local_key": "Local key",
+          "protocol_number": "Protocol number (hex) - leave the default unless told otherwise"
+        }
+      }
+    },
+    "error": {
+      "bad_key": "That is not a valid 16-byte key (base64 or 32 hex characters), or the protocol number is not hex.",
+      "not_in_range": "Home Assistant cannot see this purifier right now. Move a Bluetooth adapter or proxy closer.",
+      "cannot_connect": "Connected, but the purifier did not answer. Try again.",
+      "invalid_auth": "The purifier rejected this key. It belongs to a different unit or slot."
+    },
+    "abort": {
+      "no_devices_found": "No purifiers found. Make sure it is powered on and in range.",
+      "already_configured": "This purifier is already set up."
+    }
+  },
+  "entity": {
+    "switch": {"uv": {"name": "UV light"}},
+    "select": {"timer": {"name": "Timer"}},
+    "sensor": {
+      "air_quality": {"name": "Air quality"},
+      "filter_hours": {"name": "Filter hours used"},
+      "filter_life": {"name": "Filter life remaining"},
+      "bulb_hours": {"name": "UV bulb hours used"},
+      "bulb_life": {"name": "UV bulb life remaining"}
+    }
+  }
+}
