@@ -154,3 +154,69 @@ def test_wrong_key_is_not_retried(flow_module, monkeypatch):
     flow = _setup_flow(flow_module, monkeypatch, ["invalid_auth"])
     res = asyncio.run(flow.async_step_setup(dict(FORM)))
     assert res["errors"] == {"base": "invalid_auth"} and flow.calls["try"] == 1
+
+
+# ---- pairing starts when the unit's LINK signal is on the air, like the command-line tool ----
+UNIT_ADDR = "00:1C:4D:4B:F0:80"
+
+
+def _pair_flow(cf, monkeypatch, polls):
+    """`polls` is a list: what Bluetooth sees on each look (the last entry repeats)."""
+    from germguardian.pairing import PairResult
+    monkeypatch.setattr(cf, "LINK_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(cf, "LINK_WAIT_SECONDS", 0.05)
+    looks = {"n": 0}
+
+    def discovered(hass, connectable=True):
+        i = min(looks["n"], len(polls) - 1)
+        looks["n"] += 1
+        return polls[i]
+
+    monkeypatch.setattr(cf.bluetooth, "async_discovered_service_info", discovered)
+    monkeypatch.setattr(cf.bluetooth, "async_ble_device_from_address", lambda *a, **k: object())
+    paired = {"n": 0}
+
+    async def fake_pair_over_ble(dev, mu, proto, progress=None):
+        paired["n"] += 1
+        if progress:
+            progress("Connecting to the purifier")
+        return PairResult(bytes(range(16)), 0xEEF3C48D)
+
+    monkeypatch.setattr(cf, "pair_over_ble", fake_pair_over_ble)
+    flow = cf.GermGuardianFlow()
+    flow.hass, flow._info, flow.unique_id = SimpleNamespace(), info(), MASTER
+    return flow, looks, paired
+
+
+LINK_BEACON = info("C2:1C:4D:4B:F0:80", uuids=(), connectable=False)
+OTHER_UNITS_BEACON = info("C1:1C:4D:4B:18:DA", uuids=(), connectable=False)
+
+
+def test_link_signal_is_recognised_per_unit(flow_module):
+    hass = SimpleNamespace(infos=[LINK_BEACON, OTHER_UNITS_BEACON], scanners=1)
+    assert flow_module.link_visible(hass, UNIT_ADDR)
+    assert not flow_module.link_visible(SimpleNamespace(infos=[OTHER_UNITS_BEACON]), UNIT_ADDR)
+    assert not flow_module.link_visible(SimpleNamespace(infos=[info()]), UNIT_ADDR)   # the unit itself
+
+
+def test_pairing_waits_for_link_then_goes(flow_module, monkeypatch):
+    flow, looks, paired = _pair_flow(flow_module, monkeypatch, [[], [], [OTHER_UNITS_BEACON], [LINK_BEACON]])
+    res, err = asyncio.run(flow._pair(0xEEF3C48D))
+    assert err is None and res.key == bytes(range(16))
+    assert paired["n"] == 1 and looks["n"] == 4         # it looked until the signal appeared
+
+
+def test_pairing_still_tries_if_the_signal_is_never_seen(flow_module, monkeypatch):
+    flow, looks, paired = _pair_flow(flow_module, monkeypatch, [[OTHER_UNITS_BEACON]])
+    res, err = asyncio.run(flow._pair(0xEEF3C48D))
+    assert err is None and paired["n"] == 1             # some adapters hide it: do not block
+    assert looks["n"] > 5                               # but it did wait first
+
+
+def test_pairing_steps_are_logged_for_the_ha_log(flow_module, monkeypatch, caplog):
+    import logging
+    flow, _, _ = _pair_flow(flow_module, monkeypatch, [[LINK_BEACON]])
+    with caplog.at_level(logging.INFO):
+        asyncio.run(flow._pair(0xEEF3C48D))
+    text = caplog.text
+    assert "LINK signal seen" in text and "Connecting to the purifier" in text

@@ -25,12 +25,27 @@ _LOGGER = logging.getLogger(__name__)
 PAIR_SETTLE_ATTEMPTS = 4
 PAIR_RETRY_DELAY = 3.0
 
+# While LINK is held a unit sends a beacon from C1/C2/C3:<its own low address bytes>.
+# Like the command-line tool, start pairing only once that signal is on the air.
+LINK_WAIT_SECONDS = 20.0
+LINK_POLL_SECONDS = 0.5
+LINK_PREFIXES = ("C1", "C2", "C3")
+
 
 def master_uuid(info: BluetoothServiceInfoBleak) -> str | None:
     for u in info.service_uuids:
         if u.lower().startswith(MASTER_PREFIX):
             return u.lower()
     return None
+
+
+def link_visible(hass, address: str) -> bool:
+    """Is the LINK beacon of the unit at `address` on the air right now?"""
+    tail = address.upper()[3:]
+    return any(
+        i.address[:2].upper() in LINK_PREFIXES and i.address.upper()[3:] == tail
+        for i in bluetooth.async_discovered_service_info(hass, connectable=False)
+    )
 
 
 def _is_unit(info: BluetoothServiceInfoBleak) -> bool:
@@ -168,16 +183,38 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
                     pass
         return None
 
+    async def _wait_for_link(self) -> bool:
+        waited = 0.0
+        while True:
+            if link_visible(self.hass, self._info.address):
+                _LOGGER.warning("pairing: LINK signal seen after %.0f s", waited)
+                return True
+            if waited >= LINK_WAIT_SECONDS:
+                break
+            await asyncio.sleep(LINK_POLL_SECONDS)
+            waited += LINK_POLL_SECONDS
+        # Some adapters hide these beacons, so do not block: try anyway.
+        _LOGGER.warning("pairing: no LINK signal seen in %.0f s; trying anyway", waited)
+        return False
+
     async def _pair(self, proto: int) -> tuple[PairResult | None, str | None]:
         mu = self.unique_id if (self.unique_id or "").startswith(MASTER_PREFIX) else None
         if mu is None:
             return None, "no_master_uuid"
-        dev = bluetooth.async_ble_device_from_address(self.hass, self._info.address, connectable=True)
+        addr = self._info.address
+        if bluetooth.async_ble_device_from_address(self.hass, addr, connectable=True) is None:
+            return None, "not_in_range"
+        await self._wait_for_link()
+        dev = bluetooth.async_ble_device_from_address(self.hass, addr, connectable=True)
         if dev is None:
             return None, "not_in_range"
+        # These lines are the timeline in the HA log (logged at warning so they show by default).
+        say = lambda m: _LOGGER.warning("pairing: %s", m)  # noqa: E731
         try:
-            return await pair_over_ble(dev, mu, proto), None
+            return await pair_over_ble(dev, mu, proto, progress=say), None
         except GuardianError as err:
-            _LOGGER.warning("pairing failed: %s", err)
+            _LOGGER.warning(
+                "pairing failed: %s (LINK signal visible now: %s)", err, link_visible(self.hass, addr)
+            )
             self._pair_error = str(err)
             return None, "pair_failed"

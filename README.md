@@ -4,7 +4,7 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.3).**
+**Status: test version (0.1.4).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
 - **Pairing through Aplix's server: works.** Run against a real APZ-451 with LINK held, it
@@ -58,9 +58,11 @@ then waits up to 90 s for that purifier's LINK signal, so you can start it and w
 2. Install **GermGuardian BLE**, then **restart Home Assistant**.
 3. The purifier should appear under Settings -> Devices & services as *Discovered*. If not,
    click **Add integration** -> GermGuardian BLE.
-4. Choose your model. To pair: leave the key empty, press and HOLD LINK, and keep holding
-   it while you press Submit. Otherwise paste a key. Leave the protocol number alone. The
-   form checks the key against the unit before saving.
+4. Choose your model. To pair: leave the key empty, press **Submit**, then within 20 s press
+   and HOLD LINK and keep holding it until the form finishes (it starts as soon as it sees
+   the LINK signal). Otherwise paste a key. Leave the protocol number alone. The form checks
+   the key against the unit before saving. Pairing writes its steps to the Home Assistant
+   log as lines starting `pairing:` (for Docker: `docker logs homeassistant 2>&1 | grep -i pairing`).
 
 Home Assistant needs a Bluetooth adapter or an ESPHome Bluetooth proxy within range. Keep
 the phone app closed.

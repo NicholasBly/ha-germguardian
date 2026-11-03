@@ -11,7 +11,7 @@
       },
       "setup": {
         "title": "Model and key",
-        "description": "Unit at {address}.\n\n**To pair a unit:** leave the key empty, press and HOLD the purifier's LINK button, and keep holding it while you press Submit (takes up to ~30 s; needs internet to reach Aplix's server a.iots.net). **To use a key you already have:** paste it (base64 or 32 hex characters).\n\n{detail}",
+        "description": "Unit at {address}.\n\n**To pair a unit:** leave the key empty and press Submit, then within 20 seconds press and HOLD the purifier's LINK button and keep holding it until this form finishes (up to ~40 s; needs internet to reach Aplix's server a.iots.net). **To use a key you already have:** paste it (base64 or 32 hex characters).\n\n{detail}",
         "data": {
           "model": "Model",
           "local_key": "Local key (leave empty to pair)",
@@ -24,7 +24,7 @@
       "not_in_range": "Home Assistant cannot see this purifier right now. Move a Bluetooth adapter or proxy closer.",
       "cannot_connect": "Connected, but the purifier did not answer. Try again.",
       "invalid_auth": "The purifier rejected this key. It belongs to a different unit or slot.",
-      "pair_failed": "Pairing failed - see the Home Assistant log (\"pairing failed\"). Keep LINK held, stay close to the unit, and check internet access.",
+      "pair_failed": "Pairing failed. Press Submit first, then hold LINK until it finishes, stay close to the unit, and check internet access. The Home Assistant log has lines starting with \"pairing\".",
       "no_master_uuid": "This unit's Bluetooth ID could not be read, so it cannot be paired from here. Paste a key instead, or use tools/gg_probe.py --pair.",
       "wrong_unit": "This device did not accept the purifier handshake. It is probably a different Aplix product (for example a gateway). Go back and choose the other unit."
     },
