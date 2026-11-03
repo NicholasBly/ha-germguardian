@@ -1,6 +1,7 @@
 """Config flow: pick the unit, pick the model, give it the key you already have."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -19,6 +20,10 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Right after registration the unit needs a few seconds before it accepts a connection again.
+PAIR_SETTLE_ATTEMPTS = 4
+PAIR_RETRY_DELAY = 3.0
 
 
 def master_uuid(info: BluetoothServiceInfoBleak) -> str | None:
@@ -42,6 +47,7 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._info: BluetoothServiceInfoBleak | None = None
         self._found: dict[str, BluetoothServiceInfoBleak] = {}
+        self._paired: PairResult | None = None   # kept, so LINK is only needed once per flow
 
     def _uid(self, info: BluetoothServiceInfoBleak) -> str:
         return master_uuid(info) or info.address.lower()
@@ -94,11 +100,16 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "bad_key"
             else:
                 err = None
+                after_pairing = False
                 if key is None:
-                    paired, err = await self._pair(proto)
-                    if paired is not None:
-                        key, proto = paired.key, paired.protocol   # server's number wins
-                err = err or await self._try(key, proto)
+                    if self._paired is None:
+                        self._paired, err = await self._pair(proto)
+                    if self._paired is not None:
+                        key, proto = self._paired.key, self._paired.protocol   # server's number wins
+                        after_pairing = True
+                if not err:
+                    check = self._try_after_pairing if after_pairing else self._try
+                    err = await check(key, proto)
                 if err:
                     errors["base"] = err
                 else:
@@ -124,6 +135,16 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
                 "detail": getattr(self, "_pair_error", ""),
             },
         )
+
+    async def _try_after_pairing(self, key: bytes, proto: int) -> str | None:
+        err = None
+        for attempt in range(PAIR_SETTLE_ATTEMPTS):
+            err = await self._try(key, proto)
+            if err not in ("cannot_connect", "not_in_range"):
+                return err
+            if attempt < PAIR_SETTLE_ATTEMPTS - 1:
+                await asyncio.sleep(PAIR_RETRY_DELAY)
+        return err
 
     async def _try(self, key: bytes, proto: int) -> str | None:
         dev = bluetooth.async_ble_device_from_address(self.hass, self._info.address, connectable=True)

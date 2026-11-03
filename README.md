@@ -4,11 +4,11 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.2).**
+**Status: test version (0.1.3).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
-- **Pairing through Aplix's server: works** (the whole exchange completed against the live
-  server on a real Aplix unit). Pairing a *purifier* with LINK held is still to be confirmed.
+- **Pairing through Aplix's server: works.** Run against a real APZ-451 with LINK held, it
+  returned the same key the phone app uses (an already-paired unit is read back, not reset).
 - **Home Assistant glue: not yet confirmed on a live Home Assistant.** Expect to report bugs.
 
 If you already have a key, you do not need pairing at all: paste it in the setup form.

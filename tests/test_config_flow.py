@@ -22,6 +22,9 @@ class StubFlow:
     def async_show_form(self, *, step_id, data_schema=None, errors=None, description_placeholders=None):
         return {"type": "form", "step_id": step_id, "schema": data_schema, "errors": errors}
 
+    def async_create_entry(self, *, title, data):
+        return {"type": "create_entry", "title": title, "data": data}
+
     async def async_set_unique_id(self, uid):
         self.unique_id = uid
 
@@ -104,3 +107,50 @@ def test_gateway_picked_by_mistake_gets_a_clear_message(flow_module, monkeypatch
     flow.hass = SimpleNamespace()
     flow._info = info()
     assert asyncio.run(flow._try(bytes(16), 0xEEF3C48D)) == "wrong_unit"
+
+
+# ---- right after pairing the unit may need a moment before it accepts a connection ----
+def _setup_flow(cf, monkeypatch, try_results):
+    from germguardian.pairing import PairResult
+    monkeypatch.setattr(cf, "PAIR_RETRY_DELAY", 0)
+    flow = cf.GermGuardianFlow()
+    flow.hass = SimpleNamespace()
+    flow._info = info()
+    flow.unique_id = MASTER
+    flow.calls = {"pair": 0, "try": 0}
+
+    async def fake_pair(proto):
+        flow.calls["pair"] += 1
+        return PairResult(bytes(range(16)), 0xEEF3C48D), None
+
+    async def fake_try(key, proto):
+        flow.calls["try"] += 1
+        return try_results.pop(0) if try_results else None
+
+    flow._pair, flow._try = fake_pair, fake_try
+    return flow
+
+
+FORM = {"model": "CDAP4500BCA", "local_key": "", "protocol_number": "EEF3C48D"}
+
+
+def test_check_after_pairing_is_retried_while_the_unit_settles(flow_module, monkeypatch):
+    flow = _setup_flow(flow_module, monkeypatch, ["cannot_connect", "not_in_range", None])
+    res = asyncio.run(flow.async_step_setup(dict(FORM)))
+    assert res["type"] == "create_entry" and res["data"]["local_key"] == bytes(range(16)).hex()
+    assert flow.calls == {"pair": 1, "try": 3}
+
+
+def test_paired_key_is_kept_so_link_is_not_needed_twice(flow_module, monkeypatch):
+    flow = _setup_flow(flow_module, monkeypatch, ["cannot_connect"] * 4)
+    res = asyncio.run(flow.async_step_setup(dict(FORM)))
+    assert res["type"] == "form" and res["errors"] == {"base": "cannot_connect"}
+    res = asyncio.run(flow.async_step_setup(dict(FORM)))       # user presses Submit again
+    assert res["type"] == "create_entry"
+    assert flow.calls["pair"] == 1                              # did not pair a second time
+
+
+def test_wrong_key_is_not_retried(flow_module, monkeypatch):
+    flow = _setup_flow(flow_module, monkeypatch, ["invalid_auth"])
+    res = asyncio.run(flow.async_step_setup(dict(FORM)))
+    assert res["errors"] == {"base": "invalid_auth"} and flow.calls["try"] == 1

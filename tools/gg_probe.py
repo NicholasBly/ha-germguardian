@@ -119,8 +119,11 @@ async def main():
         print("\nDONE - you can let go of LINK.")
         print("protocol number: %08X" % proto)
         print("KEY (save this!):", base64.b64encode(key).decode(), "  hex:", key.hex())
+        # Windows will not reuse the old device handle after a disconnect: look it up afresh.
+        print("waiting for the purifier to come back...")
         await asyncio.sleep(3)
-        tries = [tries[0]]
+        fresh = await BleakScanner.find_device_by_address(dev.address, timeout=20)
+        tries = [(0, fresh or dev, master)]
     else:
         key = P.parse_key(a.key)
 
