@@ -4,7 +4,7 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.6).**
+**Status: test version (0.1.7).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
 - **Pairing through Aplix's server: works.** Run against a real APZ-451 with LINK held, it
@@ -102,6 +102,23 @@ the container needs the host's D-Bus socket and two capabilities. In `docker-com
 Apply it by **recreating** the container (`docker compose up -d`); a restart is not enough.
 The host also needs BlueZ (5.43 or newer, 5.63+ recommended): `sudo apt-get install bluez`.
 Home Assistant OS and Supervised installs set this up automatically.
+
+### The purifier keeps going "unavailable"
+
+The purifier accepts **one Bluetooth connection at a time**, and Home Assistant connects
+briefly every 30 seconds. A short gap (up to about 90 s) is hidden; a longer one turns the
+entities unavailable. The reason is in the Home Assistant log (Settings -> System -> Logs,
+search `germguardian`):
+
+- *"the purifier dropped the Bluetooth link ... [x s after connecting]"*: the link was
+  made and then lost. Close the phone app and anything else that might be connected (a
+  laptop running `gg_probe.py`, a Bluetooth scanner app), and move the adapter closer or
+  use an [ESPHome Bluetooth proxy](https://esphome.github.io/bluetooth-proxies/). The
+  Raspberry Pi's built-in Bluetooth is often weak. Please report the "x s" numbers.
+- *"cannot connect ... last advertisement N s ago"*: Home Assistant's adapter does not hear
+  the purifier at all. Check it has power, unplug it for 10 seconds, and make sure nothing
+  else is connected to it (a connected unit stops advertising).
+- *"device did not accept the key"*: the unit really refused the key twice in a row.
 
 ## Capturing the official app (for developers)
 

@@ -22,6 +22,10 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# A poll that fails keeps showing the last reading this many times before the entities turn
+# 'unavailable' (30 s apart, so about a minute and a half): one dropped link is not an outage.
+TOLERATED_FAILURES = 2
+
 
 class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -34,6 +38,7 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
         self._key = P.parse_key(entry.data[CONF_KEY])
         self._proto: int = entry.data[CONF_PROTOCOL]
         self._lock = asyncio.Lock()
+        self._failures = 0
         model = entry.data[CONF_MODEL]
         self.device_info = DeviceInfo(
             identifiers={(DOMAIN, self.address)},
@@ -53,6 +58,9 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
                 return await fn(sess)
             except GuardianError as err:
                 raise UpdateFailed(str(err)) from err
+            except Exception as err:  # noqa: BLE001 - a raw library error must not reach HA as "Unexpected error"
+                _LOGGER.debug("unexpected error talking to the purifier", exc_info=True)
+                raise UpdateFailed(f"unexpected {type(err).__name__}: {err}") from err
             finally:
                 if client is not None:
                     try:
@@ -61,7 +69,19 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
                         pass
 
     async def _async_update_data(self) -> P.Status:
-        return await self._with_session(lambda s: s.get_status())
+        try:
+            status = await self._with_session(lambda s: s.get_status())
+        except UpdateFailed as err:
+            self._failures += 1
+            if self.data is not None and self._failures <= TOLERATED_FAILURES:
+                _LOGGER.debug(
+                    "poll failed (%d of %d tolerated), keeping the last reading: %s",
+                    self._failures, TOLERATED_FAILURES, err,
+                )
+                return self.data
+            raise
+        self._failures = 0
+        return status
 
     async def async_set(self, **kw: Any) -> None:
         async def run(s: Any) -> P.Status:
@@ -73,4 +93,5 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
             status = await self._with_session(run)
         except UpdateFailed as err:
             raise HomeAssistantError(str(err)) from err
+        self._failures = 0
         self.async_set_updated_data(status)
