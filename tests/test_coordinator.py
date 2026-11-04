@@ -152,3 +152,15 @@ def test_commands_do_not_hide_failures(coord_module):
     script(coord, [UpdateFailed("link dropped")])
     with pytest.raises(HomeAssistantError, match="link dropped"):
         asyncio.run(coord.async_set(power=True))
+
+
+def test_the_first_failed_poll_in_a_row_is_logged_with_its_reason_then_it_stays_quiet(coord_module, caplog):
+    import logging
+    coord = make(coord_module)
+    script(coord, [STATUS, UpdateFailed("link dropped [0.4 s after connecting]"), UpdateFailed("again")])
+    coord.data = poll(coord)
+    with caplog.at_level(logging.DEBUG):
+        poll(coord)
+        poll(coord)
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warned) == 1 and "0.4 s after connecting" in warned[0].getMessage()

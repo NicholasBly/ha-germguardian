@@ -74,7 +74,8 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
         except UpdateFailed as err:
             self._failures += 1
             if self.data is not None and self._failures <= TOLERATED_FAILURES:
-                _LOGGER.debug(
+                # The first failure of a streak is worth a log line (the reason is the clue).
+                (_LOGGER.warning if self._failures == 1 else _LOGGER.debug)(
                     "poll failed (%d of %d tolerated), keeping the last reading: %s",
                     self._failures, TOLERATED_FAILURES, err,
                 )
