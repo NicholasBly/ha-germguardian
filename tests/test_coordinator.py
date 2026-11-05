@@ -22,7 +22,7 @@ class StubCoordinator:
         return cls
 
     def __init__(self, hass, logger, *, name, config_entry=None, update_interval=None):
-        self.hass, self.data = hass, None
+        self.hass, self.data, self.update_interval = hass, None, update_interval
 
     def async_set_updated_data(self, data):
         self.data = data
@@ -66,11 +66,12 @@ STATUS = P.Status(power=True, wind=3, auto=False, timer=0, uv=False,
                   air_quality=100, filter_hours=10, bulb_hours=5)
 
 
-def make(cm):
+def make(cm, options=None):
     entry = SimpleNamespace(
         unique_id="00000000-24f6-4000-a000-0fedf19130a2",
         data={"address": "00:1C:4D:4B:F0:80", "local_key": bytes(16).hex(),
               "protocol_number": 0xEEF3C48D, "model": "CDAP4500BCA", "master_uuid": "x"},
+        options=options or {},
     )
     return cm.GuardianCoordinator(SimpleNamespace(), entry)
 
@@ -164,3 +165,18 @@ def test_the_first_failed_poll_in_a_row_is_logged_with_its_reason_then_it_stays_
         poll(coord)
     warned = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warned) == 1 and "0.4 s after connecting" in warned[0].getMessage()
+
+
+# ---- how often to check: a gentler default, an option, and "only when I send a command" ----
+def test_checks_once_a_minute_by_default(coord_module):
+    from datetime import timedelta
+    assert make(coord_module).update_interval == timedelta(seconds=60)
+
+
+def test_the_check_interval_comes_from_the_options(coord_module):
+    from datetime import timedelta
+    assert make(coord_module, {"update_interval": 300}).update_interval == timedelta(seconds=300)
+
+
+def test_only_on_command_means_no_polling_at_all(coord_module):
+    assert make(coord_module, {"update_interval": 0}).update_interval is None

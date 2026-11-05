@@ -4,7 +4,7 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.7).**
+**Status: test version (0.1.8).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
 - **Pairing through Aplix's server: works.** Run against a real APZ-451 with LINK held, it
@@ -32,6 +32,11 @@ Or skip pairing and paste a key you already have (base64 such as
 
 Fan (on/off, 5 speeds, `auto` preset), UV light switch, timer select (off/1/2/4/8 h),
 sensors for air quality, filter hours and life, UV bulb hours and life.
+
+**How often it checks** (Settings -> Devices & services -> GermGuardian BLE -> Configure):
+every 30 s, 1 min (default), 2, 5 or 15 min, or *only when I send a command*. Each check is
+a short Bluetooth connection; commands always connect right away. With "only when I send a
+command", changes made with the purifier's own buttons show up after your next command.
 
 ## Test it without Home Assistant first (recommended)
 
@@ -106,8 +111,8 @@ Home Assistant OS and Supervised installs set this up automatically.
 ### The purifier keeps going "unavailable"
 
 The purifier accepts **one Bluetooth connection at a time**, and Home Assistant connects
-briefly every 30 seconds. A short gap (up to about 90 s) is hidden; a longer one turns the
-entities unavailable. The reason is in the Home Assistant log (Settings -> System -> Logs,
+briefly at each check (every minute by default). Two failed checks in a row are hidden; a
+longer gap turns the entities unavailable. The reason is in the Home Assistant log (Settings -> System -> Logs,
 search `germguardian`):
 
 - *"the purifier dropped the Bluetooth link ... [x s after connecting]"*: the link was
@@ -119,6 +124,38 @@ search `germguardian`):
   the purifier at all. Check it has power, unplug it for 10 seconds, and make sure nothing
   else is connected to it (a connected unit stops advertising).
 - *"device did not accept the key"*: the unit really refused the key twice in a row.
+
+### Home Assistant's Bluetooth stops working (Raspberry Pi built-in Bluetooth)
+
+If the log repeats this every minute, the **Pi's Bluetooth chip has frozen** - the purifier is
+fine, and so is every other Bluetooth device: Home Assistant just cannot hear anything.
+
+```
+[habluetooth.scanner] hci0 (...): Failed to restart Bluetooth scanner
+... Failed to start Bluetooth: passive scanning on Linux requires BlueZ >= 5.56 with --experimental enabled ...
+[bluetooth_auto_recovery.recover] Could not cycle the Bluetooth adapter hci0 ...: [Errno 110] Operation timed out
+```
+
+The "passive scanning ... --experimental" part is misleading: Home Assistant tries to start
+scanning four times and only the last try is passive, so that is just the last error. The
+real one is the next line: Home Assistant's recovery tried to power-cycle the chip and it did
+not answer. The Pi's built-in chip sits on a serial line, not USB, so a power-cycle is all
+Home Assistant can try; once it is frozen, only a driver reload or a reboot brings it back.
+
+1. **Right now:** `sudo reboot`.
+2. **So it fixes itself:** install the watchdog from this repository. Every 2 minutes it
+   looks for "Failed to restart Bluetooth scanner" in Home Assistant's log; the first time,
+   it reloads the Bluetooth driver and restarts Home Assistant; if that does not help, it
+   reboots the Pi (at most once every 6 hours; add `--no-reboot` to never reboot).
+   ```
+   curl -fsSLO https://raw.githubusercontent.com/NicholasBly/ha-germguardian/main/tools/pi-bluetooth-watchdog/bt-watchdog.sh
+   sudo bash bt-watchdog.sh install            # container not called homeassistant? add --container NAME
+   journalctl -u bt-watchdog                   # what it did
+   ```
+   Remove it with `sudo bt-watchdog uninstall`.
+3. **To make it stop happening:** use a USB Bluetooth adapter (Home Assistant can reset
+   those itself) or an [ESPHome Bluetooth proxy](https://esphome.github.io/bluetooth-proxies/),
+   and set the check interval to 2-5 minutes.
 
 ## Capturing the official app (for developers)
 

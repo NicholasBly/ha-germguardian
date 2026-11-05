@@ -35,6 +35,14 @@ class StubFlow:
         return set(self.configured)
 
 
+class StubOptionsFlow:
+    def async_show_form(self, *, step_id, data_schema=None, errors=None, description_placeholders=None):
+        return {"type": "form", "step_id": step_id, "schema": data_schema, "errors": errors}
+
+    def async_create_entry(self, *, data, title=""):
+        return {"type": "create_entry", "data": data}
+
+
 @pytest.fixture
 def flow_module():
     ha = types.ModuleType("homeassistant")
@@ -45,10 +53,13 @@ def flow_module():
     bt.async_discovered_service_info = lambda hass, connectable=True: hass.infos
     bt.async_scanner_count = lambda hass, connectable=True: hass.scanners
     bt.async_ble_device_from_address = lambda hass, addr, connectable=True: None
-    ce.ConfigFlow, ce.ConfigFlowResult = StubFlow, dict
-    comps.bluetooth, ha.components, ha.config_entries = bt, comps, ce
+    ce.ConfigFlow, ce.ConfigFlowResult, ce.OptionsFlow, ce.ConfigEntry = StubFlow, dict, StubOptionsFlow, object
+    core = types.ModuleType("homeassistant.core")
+    core.callback = lambda f: f
+    comps.bluetooth, ha.components, ha.config_entries, ha.core = bt, comps, ce, core
     names = {"homeassistant": ha, "homeassistant.components": comps,
-             "homeassistant.components.bluetooth": bt, "homeassistant.config_entries": ce}
+             "homeassistant.components.bluetooth": bt, "homeassistant.config_entries": ce,
+             "homeassistant.core": core}
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update(names)
     sys.modules.pop("germguardian.config_flow", None)
@@ -247,3 +258,30 @@ def test_pairing_steps_are_logged_for_the_ha_log(flow_module, monkeypatch, caplo
         asyncio.run(flow._pair(0xEEF3C48D))
     text = caplog.text
     assert "LINK signal seen" in text and "Connecting to the purifier" in text
+
+
+# ---- options: how often Home Assistant checks the purifier ----
+def _options(cf, current):
+    flow = cf.GermGuardianFlow.async_get_options_flow(SimpleNamespace(options=current))
+    flow.config_entry = SimpleNamespace(options=current)       # HA sets this itself
+    return flow
+
+
+def _default(form):
+    (key,) = list(form["schema"].schema)
+    return key.default()
+
+
+def test_options_offer_the_check_interval_with_the_current_choice_selected(flow_module):
+    form = asyncio.run(_options(flow_module, {}).async_step_init())
+    assert form["type"] == "form" and _default(form) == "60"
+    form = asyncio.run(_options(flow_module, {"update_interval": 300}).async_step_init())
+    assert _default(form) == "300"
+    (key,) = list(form["schema"].schema)
+    choices = form["schema"].schema[key].container
+    assert "0" in choices and "only" in choices["0"].lower()
+
+
+def test_options_save_the_interval_as_seconds(flow_module):
+    res = asyncio.run(_options(flow_module, {}).async_step_init({"update_interval": "0"}))
+    assert res == {"type": "create_entry", "data": {"update_interval": 0}}

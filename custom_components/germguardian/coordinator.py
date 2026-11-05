@@ -1,4 +1,4 @@
-"""Polls the purifier over a short-lived BLE connection."""
+"""Reads the purifier over a short-lived BLE connection, as often as the options say."""
 from __future__ import annotations
 
 import asyncio
@@ -16,22 +16,28 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from . import protocol as P
 from .client import GuardianError, open_session
 from .const import (
-    CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, DOMAIN, MODELS,
-    SCAN_INTERVAL_SECONDS,
+    CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, CONF_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL, DOMAIN, MODELS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 # A poll that fails keeps showing the last reading this many times before the entities turn
-# 'unavailable' (30 s apart, so about a minute and a half): one dropped link is not an outage.
+# 'unavailable': one dropped link is not an outage.
 TOLERATED_FAILURES = 2
+
+
+def update_interval(entry: ConfigEntry) -> timedelta | None:
+    """The check interval from the options; None = only when a command is sent."""
+    seconds = int(entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
+    return timedelta(seconds=seconds) if seconds > 0 else None
 
 
 class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
             hass, _LOGGER, name=DOMAIN, config_entry=entry,
-            update_interval=timedelta(seconds=SCAN_INTERVAL_SECONDS),
+            update_interval=update_interval(entry),
         )
         self.address: str = entry.unique_id or entry.data[CONF_MASTER_UUID]
         self.mac: str = entry.data["address"]

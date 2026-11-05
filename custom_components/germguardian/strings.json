@@ -62,5 +62,16 @@
         "name": "UV bulb life remaining"
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "How often to check the purifier",
+        "description": "Each check is a short Bluetooth connection. Fewer checks mean less work for your Bluetooth adapter; commands always connect right away. With \"Only when I send a command\" the state is read at startup and after each command, so changes made with the purifier's own buttons will not show until then.",
+        "data": {
+          "update_interval": "Check"
+        }
+      }
+    }
   }
 }

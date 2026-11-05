@@ -10,14 +10,16 @@ import voluptuous as vol
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.core import callback
 
 from . import protocol as P
 from .client import AuthError, GuardianError, UnlockError, open_session
 from .pairing import PairResult, pair_over_ble
 from .const import (
-    CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, DEFAULT_PROTOCOL,
-    DOMAIN, FEF8_UUID, MASTER_PREFIX, MODELS,
+    CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, CONF_UPDATE_INTERVAL,
+    DEFAULT_PROTOCOL, DEFAULT_UPDATE_INTERVAL, DOMAIN, FEF8_UUID, MASTER_PREFIX, MODELS,
+    UPDATE_INTERVAL_CHOICES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,6 +75,11 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
         self._info: BluetoothServiceInfoBleak | None = None
         self._found: dict[str, BluetoothServiceInfoBleak] = {}
         self._paired: PairResult | None = None   # kept, so LINK is only needed once per flow
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return GermGuardianOptions()
 
     def _uid(self, info: BluetoothServiceInfoBleak) -> str:
         return master_uuid(info) or info.address.lower()
@@ -232,3 +239,22 @@ class GermGuardianFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("pairing failed unexpectedly")
             self._pair_error = f"unexpected {type(err).__name__}: {err}"
             return None, "pair_failed"
+
+
+class GermGuardianOptions(OptionsFlow):
+    """How often Home Assistant checks the purifier (each check is a Bluetooth connection)."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(
+                data={CONF_UPDATE_INTERVAL: int(user_input[CONF_UPDATE_INTERVAL])}
+            )
+        current = str(self.config_entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
+        if current not in UPDATE_INTERVAL_CHOICES:
+            current = str(DEFAULT_UPDATE_INTERVAL)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Required(CONF_UPDATE_INTERVAL, default=current): vol.In(UPDATE_INTERVAL_CHOICES),
+            }),
+        )
