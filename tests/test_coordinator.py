@@ -23,9 +23,35 @@ class StubCoordinator:
 
     def __init__(self, hass, logger, *, name, config_entry=None, update_interval=None):
         self.hass, self.data, self.update_interval = hass, None, update_interval
+        self.last_update_success, self.last_exception = True, None
 
     def async_set_updated_data(self, data):
-        self.data = data
+        self.data, self.last_update_success = data, True
+
+    def async_set_update_error(self, err):
+        self.last_update_success, self.last_exception = False, err
+
+    async def async_refresh(self):
+        try:
+            self.data = await self._async_update_data()
+            self.last_update_success = True
+        except UpdateFailed as err:
+            self.last_update_success, self.last_exception = False, err
+
+    async def async_shutdown(self):
+        pass
+
+
+LATER = []          # (delay, action, cancelled-flag holder) recorded by the async_call_later stand-in
+
+
+def async_call_later(hass, delay, action):
+    entry = {"delay": delay, "action": action, "cancelled": False}
+    LATER.append(entry)
+
+    def cancel():
+        entry["cancelled"] = True
+    return cancel
 
 
 @pytest.fixture
@@ -45,11 +71,13 @@ def coord_module():
         "homeassistant.exceptions": mod("homeassistant.exceptions", HomeAssistantError=HomeAssistantError),
         "homeassistant.helpers": mod("homeassistant.helpers"),
         "homeassistant.helpers.device_registry": mod("homeassistant.helpers.device_registry", DeviceInfo=dict),
+        "homeassistant.helpers.event": mod("homeassistant.helpers.event", async_call_later=async_call_later),
         "homeassistant.helpers.update_coordinator": mod(
             "homeassistant.helpers.update_coordinator",
             DataUpdateCoordinator=StubCoordinator, UpdateFailed=UpdateFailed,
         ),
     }
+    LATER.clear()
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update(names)
     sys.modules.pop("germguardian.coordinator", None)
@@ -180,3 +208,114 @@ def test_the_check_interval_comes_from_the_options(coord_module):
 
 def test_only_on_command_means_no_polling_at_all(coord_module):
     assert make(coord_module, {"update_interval": 0}).update_interval is None
+
+
+# ---- a failed command must not leave a state on screen that we could not change or confirm ----
+def test_a_failed_command_marks_the_purifier_unavailable_instead_of_keeping_the_old_state(coord_module):
+    coord = make(coord_module)
+    coord.data = STATUS                                   # shows "on"
+    script(coord, [UpdateFailed("link dropped")])
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coord.async_set(power=False))
+    assert coord.last_update_success is False             # -> entities show "unavailable"
+
+
+def test_after_a_failed_command_the_next_failed_check_is_not_hidden(coord_module):
+    coord = make(coord_module)
+    script(coord, [STATUS, UpdateFailed("command"), UpdateFailed("check")])
+    coord.data = poll(coord)
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coord.async_set(power=False))
+    with pytest.raises(UpdateFailed, match="check"):
+        poll(coord)
+
+
+def test_command_only_mode_checks_again_later_until_it_reaches_the_purifier(coord_module):
+    coord = make(coord_module, {"update_interval": 0})
+    coord.data = STATUS
+    off = P.Status(power=False, wind=3, auto=False, timer=0, uv=False,
+                   air_quality=100, filter_hours=10, bulb_hours=5)
+    script(coord, [UpdateFailed("link dropped"), UpdateFailed("still"), off])
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coord.async_set(power=False))
+    assert len(LATER) == 1 and LATER[0]["delay"] == coord_module.RECOVERY_CHECK_SECONDS
+    asyncio.run(LATER[0]["action"](None))                 # check fails -> try again later
+    assert coord.last_update_success is False and len(LATER) == 2
+    asyncio.run(LATER[1]["action"](None))                 # check works -> real state, no more checks
+    assert coord.last_update_success is True and coord.data == off and len(LATER) == 2
+
+
+def test_only_one_recovery_check_is_pending_at_a_time(coord_module):
+    coord = make(coord_module, {"update_interval": 0})
+    script(coord, [UpdateFailed("a"), UpdateFailed("b")])
+    for _ in range(2):
+        with pytest.raises(HomeAssistantError):
+            asyncio.run(coord.async_set(power=False))
+    assert len(LATER) == 1
+
+
+def test_polling_mode_needs_no_extra_recovery_check(coord_module):
+    coord = make(coord_module)
+    script(coord, [UpdateFailed("a")])
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coord.async_set(power=False))
+    assert LATER == []
+
+
+def test_unloading_cancels_a_pending_recovery_check(coord_module):
+    coord = make(coord_module, {"update_interval": 0})
+    script(coord, [UpdateFailed("a")])
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coord.async_set(power=False))
+    asyncio.run(coord.async_shutdown())
+    assert LATER[0]["cancelled"] is True
+
+
+# ---- nothing may hold the integration up forever (it would sit silently on the old state) ----
+class SlowClient:
+    def __init__(self, hang_disconnect=False):
+        self.hang_disconnect, self.disconnects = hang_disconnect, 0
+
+    async def disconnect(self):
+        self.disconnects += 1
+        if self.hang_disconnect:
+            await asyncio.sleep(30)
+
+
+def test_a_bluetooth_session_that_never_answers_times_out_and_frees_the_lock(coord_module, monkeypatch):
+    import germguardian.coordinator as cm
+    monkeypatch.setattr(cm, "SESSION_TIMEOUT", 0.05)
+    coord = make(cm)
+    client = SlowClient()
+
+    async def fake_open(*a, **k):
+        return client, SimpleNamespace(get_status=None)
+    monkeypatch.setattr(cm, "open_session", fake_open)
+
+    async def hang(sess):
+        await asyncio.sleep(30)
+
+    async def ok(sess):
+        return STATUS
+
+    async def go():
+        with pytest.raises(UpdateFailed, match="did not respond"):
+            await coord._with_session(hang)
+        return await asyncio.wait_for(coord._with_session(ok), 2)   # the lock is free again
+
+    assert asyncio.run(go()) == STATUS and client.disconnects == 2
+
+
+def test_a_disconnect_that_never_finishes_does_not_hang_the_integration(coord_module, monkeypatch):
+    import germguardian.coordinator as cm
+    monkeypatch.setattr(C, "DISCONNECT_TIMEOUT", 0.05)
+    coord = make(cm)
+
+    async def fake_open(*a, **k):
+        return SlowClient(hang_disconnect=True), None
+    monkeypatch.setattr(cm, "open_session", fake_open)
+
+    async def ok(sess):
+        return STATUS
+
+    assert asyncio.run(asyncio.wait_for(coord._with_session(ok), 2)) == STATUS

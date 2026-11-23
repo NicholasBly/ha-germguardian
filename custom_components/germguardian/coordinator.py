@@ -11,10 +11,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import protocol as P
-from .client import GuardianError, open_session
+from .client import GuardianError, open_session, safe_disconnect
 from .const import (
     CONF_KEY, CONF_MASTER_UUID, CONF_MODEL, CONF_PROTOCOL, CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL, DOMAIN, MODELS,
@@ -25,6 +26,14 @@ _LOGGER = logging.getLogger(__name__)
 # A poll that fails keeps showing the last reading this many times before the entities turn
 # 'unavailable': one dropped link is not an outage.
 TOLERATED_FAILURES = 2
+
+# A whole connect-login-talk session that takes longer than this is stuck (a frozen adapter can
+# leave a Bluetooth call unanswered); give up so the integration does not freeze on the old state.
+SESSION_TIMEOUT = 120.0
+
+# "Only when I send a command": after a failed command nothing else would ever look again, so
+# check every few minutes until the purifier answers, then stop.
+RECOVERY_CHECK_SECONDS = 300
 
 
 def update_interval(entry: ConfigEntry) -> timedelta | None:
@@ -45,6 +54,7 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
         self._proto: int = entry.data[CONF_PROTOCOL]
         self._lock = asyncio.Lock()
         self._failures = 0
+        self._recovery: Any = None          # cancel-function of a pending recovery check
         model = entry.data[CONF_MODEL]
         self.device_info = DeviceInfo(
             identifiers={(DOMAIN, self.address)},
@@ -59,9 +69,18 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
             raise UpdateFailed("purifier is not in Bluetooth range")
         async with self._lock:
             client = None
+            limit = asyncio.timeout(SESSION_TIMEOUT)
             try:
-                client, sess = await open_session(dev, self._key, self._proto, self.mac)
-                return await fn(sess)
+                async with limit:
+                    client, sess = await open_session(dev, self._key, self._proto, self.mac)
+                    return await fn(sess)
+            except TimeoutError as err:
+                if limit.expired():
+                    raise UpdateFailed(
+                        f"the purifier did not respond within {SESSION_TIMEOUT:.0f} s "
+                        "(Bluetooth adapter stuck?)"
+                    ) from err
+                raise UpdateFailed(f"timed out: {err}") from err
             except GuardianError as err:
                 raise UpdateFailed(str(err)) from err
             except Exception as err:  # noqa: BLE001 - a raw library error must not reach HA as "Unexpected error"
@@ -69,10 +88,7 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
                 raise UpdateFailed(f"unexpected {type(err).__name__}: {err}") from err
             finally:
                 if client is not None:
-                    try:
-                        await client.disconnect()
-                    except Exception:  # noqa: BLE001
-                        pass
+                    await safe_disconnect(client)
 
     async def _async_update_data(self) -> P.Status:
         try:
@@ -99,6 +115,32 @@ class GuardianCoordinator(DataUpdateCoordinator[P.Status]):
         try:
             status = await self._with_session(run)
         except UpdateFailed as err:
+            self._command_failed(err)
             raise HomeAssistantError(str(err)) from err
         self._failures = 0
         self.async_set_updated_data(status)
+
+    def _command_failed(self, err: Exception) -> None:
+        """Do not keep showing a state we could neither change nor confirm."""
+        self._failures = TOLERATED_FAILURES      # the next failed check is not hidden either
+        self.async_set_update_error(err)         # entities show "unavailable"
+        if self.update_interval is None:
+            self._schedule_recovery()
+
+    def _schedule_recovery(self) -> None:
+        if self._recovery is not None:
+            return
+
+        async def check(_now: Any) -> None:
+            self._recovery = None
+            await self.async_refresh()
+            if not self.last_update_success and self.update_interval is None:
+                self._schedule_recovery()
+
+        self._recovery = async_call_later(self.hass, RECOVERY_CHECK_SECONDS, check)
+
+    async def async_shutdown(self) -> None:
+        if self._recovery is not None:
+            self._recovery()
+            self._recovery = None
+        await super().async_shutdown()

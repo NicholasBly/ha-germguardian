@@ -154,3 +154,19 @@ def test_connect_failures_and_wrong_units_are_not_retried(connector):
     with pytest.raises(C.UnlockError):
         asyncio.run(C.open_session(object(), KEY, PROTO, "unit"))
     assert connector.connects == 1
+
+
+
+def test_a_disconnect_that_never_finishes_does_not_hang_a_failed_login(connector, monkeypatch):
+    monkeypatch.setattr(C, "DISCONNECT_TIMEOUT", 0.05, raising=False)
+
+    class StuckDisconnect(Flaky):
+        async def disconnect(self):
+            await asyncio.sleep(30)
+
+    connector.clients = [StuckDisconnect(KEY, "mid") for _ in range(3)]
+
+    async def go():
+        with pytest.raises(C.LinkLostError):
+            await asyncio.wait_for(C.open_session(object(), KEY, PROTO, "unit"), 3)
+    asyncio.run(go())

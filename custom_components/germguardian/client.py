@@ -34,6 +34,7 @@ REPLY_TIMEOUT = 6.0
 CONNECT_TRIES = 3
 AUTH_TRIES = 2                  # a refused key is retried once, not hammered
 CONNECT_RETRY_PAUSE = 1.5       # seconds between attempts
+DISCONNECT_TIMEOUT = 10.0       # a disconnect that hangs (stuck Bluetooth) is abandoned after this
 
 
 class GuardianError(Exception):
@@ -54,6 +55,14 @@ class UnlockError(CommError):
 
 class LinkLostError(CommError):
     """The Bluetooth link dropped before or during login (not a refused key)."""
+
+
+async def safe_disconnect(client: Any) -> None:
+    """Disconnect, but never hang or raise: a stuck adapter must not wedge the caller."""
+    try:
+        await asyncio.wait_for(client.disconnect(), DISCONNECT_TIMEOUT)
+    except Exception as err:  # noqa: BLE001 - includes TimeoutError
+        _LOGGER.debug("disconnect failed or hung: %r", err)
 
 
 def _connected(client: Any) -> bool:
@@ -234,10 +243,7 @@ async def _open_once(ble_device: Any, key: bytes, protocol_number: int, name: st
         except Exception as err:  # noqa: BLE001
             raise sess._link_error("starting notifications", err) from err
     except BaseException as err:     # includes cancellation: never leave the unit connected
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        await safe_disconnect(client)
         if isinstance(err, LinkLostError):
             # How soon after connecting it dropped is the clue to why.
             raise LinkLostError(

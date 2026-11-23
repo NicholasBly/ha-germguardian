@@ -4,7 +4,7 @@ Local Bluetooth control of the abandoned Guardian Technologies / GermGuardian sm
 purifiers (APZ-451 = **CDAP4500BCA**, APZ-453 = **CDAP5500BCA**). No cloud, no vendor
 app, no internet.
 
-**Status: test version (0.1.8).**
+**Status: test version (0.1.9).**
 - **Local control: works on real hardware** (power on/off and status, tested on an APZ-451
   with `tools/gg_probe.py`).
 - **Pairing through Aplix's server: works.** Run against a real APZ-451 with LINK held, it
@@ -37,6 +37,9 @@ sensors for air quality, filter hours and life, UV bulb hours and life.
 every 30 s, 1 min (default), 2, 5 or 15 min, or *only when I send a command*. Each check is
 a short Bluetooth connection; commands always connect right away. With "only when I send a
 command", changes made with the purifier's own buttons show up after your next command.
+
+If a command fails, the purifier shows as **unavailable** instead of keeping a state that may be
+wrong; in "only when I send a command" mode it is then checked every 5 minutes until it answers.
 
 ## Test it without Home Assistant first (recommended)
 
@@ -156,6 +159,14 @@ Home Assistant can try; once it is frozen, only a driver reload or a reboot brin
 3. **To make it stop happening:** use a USB Bluetooth adapter (Home Assistant can reset
    those itself) or an [ESPHome Bluetooth proxy](https://esphome.github.io/bluetooth-proxies/),
    and set the check interval to 2-5 minutes.
+
+**Raspberry Pi 3 Model B (the original, not the 3B+):** if `sudo dmesg | grep hci0` shows
+`Frame reassembly failed (-84)`, the serial line between the Pi and its Bluetooth chip is
+garbling data. Raspberry Pi engineers explain that early boards
+["lack the flow control signals required for reliable communication under load"](https://github.com/raspberrypi/firmware/issues/1150);
+lowering that line's speed (Home Assistant OS uses 460800 instead of 921600) or a better power
+supply helps some people, a USB adapter or ESPHome proxy fixes it. Check for under-voltage with
+`vcgencmd get_throttled` (`throttled=0x0` is good).
 
 ## Capturing the official app (for developers)
 
